@@ -3100,8 +3100,9 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print("素材命名中台已启动: http://127.0.0.1:%d" % PORT)
+    host = os.environ.get("HOST", "127.0.0.1")
+    srv = ThreadingHTTPServer((host, PORT), Handler)
+    print("素材命名中台已启动: http://%s:%d%s" % (host, PORT, "（只读）" if READONLY else ""))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
