@@ -762,7 +762,14 @@ def ai_chat(s, messages):
     base = (s.get("ai_base_url") or "https://api.openai.com/v1").rstrip("/")
     body = {"model": s.get("ai_model") or "gpt-4o-mini", "messages": messages, "temperature": 0.2,
             "response_format": {"type": "json_object"}}
-    data = http_json(base + "/chat/completions", body, {"Authorization": "Bearer " + key}, timeout=180)
+    try:
+        data = http_json(base + "/chat/completions", body, {"Authorization": "Bearer " + key}, timeout=180)
+    except ApiError as e:
+        # 部分 OpenAI 兼容接口（如部分视觉模型）不支持 response_format，去掉后重试，靠提示词约束 JSON
+        if "400" not in str(e) or "response_format" not in str(e).lower() and "json" not in str(e).lower():
+            raise
+        body.pop("response_format")
+        data = http_json(base + "/chat/completions", body, {"Authorization": "Bearer " + key}, timeout=180)
     return parse_json_loose(data["choices"][0]["message"]["content"])
 
 

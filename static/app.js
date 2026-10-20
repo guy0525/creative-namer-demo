@@ -1589,7 +1589,9 @@ function pageSettings(main) {
       <label class="f">模型<input data-s="ai_model" value="${esc(s.ai_model)}" style="width:200px"></label>
       <label class="f" title="视频口播转写（/audio/transcriptions），不支持的接口会自动跳过">语音转写模型<input data-s="ai_asr_model" value="${esc(s.ai_asr_model || 'whisper-1')}" style="width:130px"></label>
       <label class="f grow">API Key<input data-s="ai_api_key" type="password" placeholder="${s.ai_api_key_set ? '已配置（留空保持不变）' : 'sk-...'}"></label></div>
-      <div class="small muted" style="margin-top:6px">可用 OpenAI（gpt-4o / gpt-4o-mini）、Gemini 的 OpenAI 兼容端点、通义千问 VL、豆包视觉等。</div></div>
+      <div class="small muted" style="margin-top:6px">常用配置：通义千问 Base URL <code>https://dashscope.aliyuncs.com/compatible-mode/v1</code> 模型 <code>qwen-vl-max</code>；
+        Gemini Base URL <code>https://generativelanguage.googleapis.com/v1beta/openai</code> 模型 <code>gemini-2.5-flash</code>；
+        OpenAI 默认 Base URL，模型 <code>gpt-4o</code>（支持口播转写）。</div></div>
     <div class="card"><h3>Meta（商品目录同步 / 广告数据拉取）</h3><div class="row">
       <label class="f grow">Access Token<input data-s="meta_token" type="password" placeholder="${s.meta_token_set ? '已配置（留空保持不变）' : 'EAAG...'}"></label>
       <label class="f">广告账户 ID<input data-s="meta_ad_account" value="${esc(s.meta_ad_account)}" placeholder="act_123..." style="width:180px"></label>
