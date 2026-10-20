@@ -750,7 +750,7 @@ class Editor {
 
   mediaSrc() {
     const a = this.a;
-    return a.file_path && (a.file_path.startsWith('blob:') || a.demo) ? a.file_path : a.file_path ? `/files/${a.id}` : '';
+    return a.file_path && (a.file_path.startsWith('blob:') || a.demo || a.showcase) ? a.file_path : a.file_path ? `/files/${a.id}` : '';
   }
 
   mediaHtml() {
@@ -818,8 +818,8 @@ class Editor {
           ${pred && pred.spend_tier ? `<div><span>效果预估</span><b>${esc(pred.spend_tier)}</b> 档 · ROAS ${pred.roas_low ?? '-'}–${pred.roas_high ?? '-'}</div>` : ''}
         </div>
         <div class="row" style="margin-top:10px">
-          <button class="btn sm" data-act="reanalyze">↻ AI 重新识别</button>
-          ${a.file_path && !String(a.file_path).startsWith('blob:') ? `<a class="btn sm" href="/files/${a.id}?download=1">⬇ 下载（已重命名）</a>` : ''}
+          ${a.showcase ? '<span class="badge ok">真实素材 · 真实 AI 分析结果（只读）</span>' : '<button class="btn sm" data-act="reanalyze">↻ AI 重新识别</button>'}
+          ${a.file_path && !a.showcase && !String(a.file_path).startsWith('blob:') ? `<a class="btn sm" href="/files/${a.id}?download=1">⬇ 下载（已重命名）</a>` : ''}
         </div>
       </div>
       <div class="vx-main">
@@ -839,8 +839,8 @@ class Editor {
           <div class="frow"><div class="fl">媒体素材ID</div><div class="fctl"><input data-act="media" style="flex:1" placeholder="Meta creative id / video id / image hash，多个用逗号分隔（可选，导入数据时会自动学习）" value="${esc((a.media_ids || []).join(','))}"></div></div>
           <div class="row" style="margin-top:12px">
             <span class="grow"></span>
-            <span class="small muted" data-r="saved">${a.status === 'named' ? '已保存' : '未保存'}</span>
-            <button class="btn pri" data-act="save">保存命名</button>
+            <span class="small muted" data-r="saved">${a.showcase ? '真实案例只读，可在本页上传自己的素材试用' : a.status === 'named' ? '已保存' : '未保存'}</span>
+            ${a.showcase ? '' : '<button class="btn pri" data-act="save">保存命名</button>'}
           </div>
         </div>
       </div></div>`;
@@ -1065,9 +1065,11 @@ function pageUpload(main) {
       ${STATIC_DEMO ? '<button class="btn pri" id="demoTrialVid">试用演示视频</button><button class="btn" id="demoTrial">试用演示图片</button>' : ''}
       <span class="small muted">${STATIC_DEMO ? '或自行上传图片 / 视频 / GIF' : ''}</span>
     </div>
+    <div id="showcase"></div>
     <div class="drop" id="drop"><b>拖拽图片 / 视频 / GIF 到这里</b><div class="muted">或点击选择文件，可多选</div>
       <input type="file" id="fileIn" multiple accept="image/*,video/*" hidden></div>
     <div id="queue" style="margin-top:18px"></div>`;
+  if (STATIC_DEMO) renderShowcase($('#showcase'));
   const drop = $('#drop'), fileIn = $('#fileIn');
   drop.onclick = () => fileIn.click();
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
@@ -1079,6 +1081,28 @@ function pageUpload(main) {
   const trialV = $('#demoTrialVid');
   if (trialV) trialV.onclick = () => demoTrialVideo(trialV);
   QUEUE.forEach(renderQueueItem);
+}
+
+async function renderShowcase(el) {
+  const list = await fetch(staticFile('/api/showcase')).then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  if (!list.length || !el.isConnected) return;
+  el.innerHTML = `<div class="card"><h3>真实素材 AI 分析案例 <span class="small muted">真实投放素材 + 真实 AI 输出，点击查看完整三层理解与命名</span></h3>
+    <div class="sc-grid">${list.map((a) => `<button type="button" class="sc" data-id="${a.id}">
+      <div class="sc-img">${a.thumb ? `<img src="${a.thumb}">` : ''}${a.card.tier ? `<span class="tier-mini tier-${esc(a.card.tier)}">${esc(a.card.tier)}</span>` : ''}</div>
+      <div class="sc-b"><code>${esc(a.short_name)}</code>
+        <div class="small">${esc(a.card.one_liner)}</div>
+        <div class="small muted">${a.media_type === 'video' ? '视频' : '图片'} · ${a.card.clips} 个分镜${a.card.roas_low != null ? ` · 预估 ROAS ${a.card.roas_low}–${a.card.roas_high}` : ''}</div></div>
+    </button>`).join('')}</div></div>`;
+  el.onclick = async (e) => {
+    const b = e.target.closest('[data-id]');
+    if (!b) return;
+    try {
+      const a = await api('GET', '/api/assets/' + b.dataset.id);
+      const box = document.createElement('div');
+      openModal('真实案例 · ' + a.short_name, box);
+      new Editor(a, box, {});
+    } catch (err) { fail(err); }
+  };
 }
 
 async function demoTrialVideo(btn) {
@@ -1229,7 +1253,7 @@ async function pageAssets(main) {
       <td class="small muted">${a.media_ids.length ? a.media_ids.length + ' 个' : '-'}</td>
       <td>${a.status === 'named' ? '<span class="badge ok">已命名</span>' : '<span class="badge new">待确认</span>'}</td>
       <td style="white-space:nowrap"><button class="btn sm" data-edit="${a.id}">编辑</button>
-        ${a.file_path ? `<a class="btn sm" href="/files/${a.id}?download=1">下载</a>` : ''}
+        ${a.file_path && !a.showcase ? `<a class="btn sm" href="/files/${a.id}?download=1">下载</a>` : ''}
         <button class="btn sm danger" data-del="${a.id}">删除</button></td></tr>`).join('');
   };
   draw();
