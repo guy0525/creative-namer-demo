@@ -374,7 +374,7 @@ async function loadState(st) {
   if (ST.readonly && !document.body.classList.contains('ro')) {
     document.body.classList.add('ro');
     document.body.insertAdjacentHTML('afterbegin', `<div class="ro-bar">${STATIC_DEMO
-      ? '在线演示 · 可试用「素材理解与命名」与三个分析视角；命名结果仅保存在本页会话，不会写入服务器'
+      ? '在线演示 · 可试用「上传 & AI 命名」与三个分析视角；命名结果仅保存在本页会话，不会写入服务器'
       : '只读分享视图 · 可浏览全部分析与下钻，不能修改数据'}</div>`);
   }
   $('#navFoot').innerHTML = `商品 ${ST.counts.products} · 素材 ${ST.counts.assets}<br>投放数据 ${ST.counts.perf} 行<br>${ST.settings.ai_api_key_set ? '<span style="color:#7ee2b0">● AI 已连接</span>' : '<span style="color:#f5b971">● AI 未配置</span>'}`;
@@ -1069,7 +1069,7 @@ function pageUpload(main) {
     ? `<div class="card" style="border-color:#c9cdf3;background:#f7f8ff">在线演示：真实执行<b>浏览器自动切镜</b>，理解内容为模拟数据（不调用真实 AI、不落库）。可点「试用演示视频」或自行上传。</div>`
     : (ST.settings.ai_api_key_set ? '<div class="card" style="border-color:#cfe9d8;background:#f1faf5">已配置 AI：上传后自动切镜 → 事实层 → 认知层 → 命名 → 判断层（结合历史投放数据）。方法论见仓库 <code>methodology.md</code>。</div>'
       : '<div class="card" style="border-color:#f5d48a;background:#fffaf0">尚未配置 AI Key：上传后只会自动切镜并预填命名字段。请到 <a href="#/settings">设置</a> 填写 OpenAI 兼容接口以启用三层理解。</div>');
-  main.innerHTML = `<h1>素材理解与命名</h1>
+  main.innerHTML = `<h1>上传素材 &amp; AI 理解 / 命名</h1>
     <p class="sub">视频先按画面突变自动切成碎镜，AI 再逐镜做三层理解：<b>事实层</b>（编导视角，只记录）→ <b>认知层</b>（广告机制，只分析）→ <b>判断层</b>（结合历史数据预估效果，给出分镜级微调与生成提示词）；命名基于理解结果与知识库。</p>
     ${demoNote}
     ${!STATIC_DEMO && !PRODUCTS.length ? '<div class="card" style="border-color:#f5d48a;background:#fffaf0">商品库为空：AI 无法识别 SPU。请先到 <a href="#/products">商品库</a> 同步 Shopify / Meta 目录。</div>' : ''}
