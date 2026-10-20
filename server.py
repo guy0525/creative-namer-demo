@@ -600,7 +600,11 @@ def get_asset(c, aid):
     r = c.execute("SELECT * FROM assets WHERE id=?", (aid,)).fetchone()
     if not r:
         raise ApiError("素材不存在", 404)
-    return asset_row(r)
+    a = asset_row(r)
+    raw = a.get("ai_raw") or {}
+    if isinstance(raw, dict) and raw.get("understanding"):
+        a["understanding"] = normalize_understanding(raw["understanding"], a.get("media_type") or "image")
+    return a
 
 
 def next_seq(c):
@@ -781,6 +785,162 @@ def spec_prompt(fields):
     return "\n".join(lines)
 
 
+EFD_LAYERS = [
+    ("L1", "注意力捕获", "钩子率/thumbstop", "1–3秒是否停滑、是否立刻知道素材在讲什么"),
+    ("L2", "对象认同", "前段留存/共鸣", "目标人群是否觉得「这是说我」"),
+    ("L3", "叙事说服结构", "中段留存/hold", "痛点或欲望→加剧→方案→证明→行动是否完整"),
+    ("L4", "信任与证据", "CTR前停留", "主张是否可信：演示/对比/数据/口碑/质感"),
+    ("L5", "视听语言", "掉点位置", "灯光、构图、景别、运镜、转场、节奏是否服务说服"),
+    ("L6", "信息与台词", "CTR/承诺一致", "口播、字幕、CTA 是否清晰且与落地页一致"),
+    ("L7", "可复刻变量", "对照实验", "必须保留什么、可测什么、如何写迭代提示词"),
+]
+
+
+def efd_layer_shell():
+    return [{"id": lid, "name": name, "impact": 8 - i, "score": None, "verdict": "unknown",
+             "metric_proxy": metric, "question": q, "evidence": [], "why_it_matters": "", "improve": ""}
+            for i, (lid, name, metric, q) in enumerate(EFD_LAYERS)]
+
+
+def understanding_summary(u):
+    if not u:
+        return ""
+    lines = [u.get("one_liner") or "", "方法论：%s" % (u.get("methodology_name") or "EFD-7")]
+    for ly in u.get("layers") or []:
+        if not ly.get("name"):
+            continue
+        bits = ["%s %s" % (ly.get("id") or "", ly["name"])]
+        if ly.get("verdict"):
+            bits.append("判定=%s" % ly["verdict"])
+        if ly.get("score") is not None:
+            bits.append("分=%s/5" % ly["score"])
+        if ly.get("evidence"):
+            bits.append("证据：" + "；".join(ly["evidence"][:3]))
+        if ly.get("improve"):
+            bits.append("改进：" + ly["improve"])
+        lines.append(" · ".join(bits))
+    brief = ((u.get("replication_brief") or {}).get("iteration_prompt") or "").strip()
+    if brief:
+        lines.append("迭代提示词：" + brief[:400])
+    return "\n".join(x for x in lines if x)
+
+
+def normalize_understanding(raw_u, media_type):
+    u = dict(raw_u or {}) if isinstance(raw_u, dict) else {}
+    u.setdefault("methodology", "EFD-7")
+    u.setdefault("methodology_name", "效果漏斗拆解法 EFD-7")
+    u["media_type"] = media_type
+    by_id = {x.get("id"): x for x in (u.get("layers") or []) if isinstance(x, dict)}
+    layers = []
+    for shell in efd_layer_shell():
+        hit = by_id.get(shell["id"]) or {}
+        row = dict(shell)
+        row.update({k: hit[k] for k in ("score", "verdict", "evidence", "why_it_matters", "improve", "metric_proxy") if k in hit})
+        if isinstance(row.get("evidence"), str):
+            row["evidence"] = [row["evidence"]]
+        row["evidence"] = list(row.get("evidence") or [])[:6]
+        layers.append(row)
+    u["layers"] = layers
+    u.setdefault("beats", [])
+    u.setdefault("craft", {})
+    u.setdefault("script", {})
+    u.setdefault("replication_brief", {})
+    u.setdefault("one_liner", "")
+    u.setdefault("product_on_screen", "")
+    if not u.get("summary_markdown"):
+        u["summary_markdown"] = understanding_summary(u)
+    return u
+
+
+def offline_understanding(asset, values):
+    mtype = asset.get("media_type") or "image"
+    spu = ""
+    for v in (values or {}).values():
+        if isinstance(v, dict) and v.get("spu"):
+            spu = v["spu"]
+            break
+    layers = efd_layer_shell()
+    for ly in layers:
+        ly["verdict"] = "unknown"
+        ly["score"] = 3
+        ly["evidence"] = ["未配置 AI Key，无法从画面验真；仅保留漏斗骨架供人工补全"]
+        ly["improve"] = "配置 AI Key 后重新识别，将补齐证据与判定"
+    return normalize_understanding({
+        "one_liner": "未配置 AI：已按文件类型/文件名预填命名字段，内容理解待 AI 补全。",
+        "product_on_screen": spu or "未知",
+        "layers": layers,
+        "beats": [{"t": "全文", "name": "未分析", "visual": "需 AI", "audio": "需 AI", "intent": "需 AI"}] if mtype == "video" else [],
+        "craft": {"lighting": "", "camera": "", "composition": "", "transitions": "", "pacing": ""},
+        "script": {"spoken": "", "on_screen_text": "", "cta": ""},
+        "replication_brief": {
+            "must_keep": [], "variables_to_test": ["钩子前3秒", "证明方式", "CTA 措辞"],
+            "iteration_prompt": "（配置 AI 后生成）在保持卖点清晰的前提下，强化前3秒钩子与证据 denseness，输出可拍摄的分镜 brief。",
+        },
+    }, mtype)
+
+
+def understand_prompt(asset, media_desc):
+    is_video = asset.get("media_type") in ("video", "gif")
+    return """你是广告效果导演 + 心理学顾问 + 编剧/摄影指导。请严格按「效果漏斗拆解法 EFD-7」拆解素材（见仓库 methodology-efd7.md）。
+
+素材类型：%s；文件名：%s
+下方按时间顺序给出关键画面（视频为抽帧）。
+
+【硬约束——可被人验收】
+1. 按影响力 L1→L7 输出；若 L1 或 L2 为 fail，必须在 summary 与 L7 的 iteration_prompt 中写明「先修上层，下层视听精修边际收益低」。
+2. 每层 evidence 必须可指认：时间点/字幕原文/景别或主体变化/口播句；禁止「氛围好」「很高级」等无证据空话。
+3. score∈1–5；verdict∈pass|weak|fail；metric_proxy 写投放代理指标（钩子率/hold/CTR 等）。
+4. 融合但不堆砌：Motion 停滑逻辑 + PAS/AIDA 说服序 + 7-Beat 节拍 + 灯光/构图/运镜/转场（L5 只服务说服）。
+5. L3 对照 PAS 与 7-Beat，点名缺失节拍。L4 点名证据类型（演示/对比/特写/口碑/数据）。
+6. L7：must_keep≥2；variables_to_test≥2；iteration_prompt 中文 150–400 字，可直接当拍摄/生成 brief（含秒数建议、画面、字幕、口播、禁改项）。
+
+【层】L1注意力捕获｜L2对象认同｜L3叙事说服结构｜L4信任与证据｜L5视听语言｜L6信息与台词｜L7可复刻变量
+
+%s只输出 JSON：
+{
+ "one_liner": "一句话：卖什么、怎么卖、核心钩子",
+ "product_on_screen": "画面商品描述",
+ "layers": [
+   {"id":"L1","name":"注意力捕获","score":0,"verdict":"pass|weak|fail","metric_proxy":"","evidence":["..."],"why_it_matters":"","improve":""}
+ ],
+ "beats": [{"t":"0-3s","name":"Opening","visual":"","audio":"","intent":""}],
+ "craft": {"lighting":"","camera":"","composition":"","transitions":"","pacing":""},
+ "script": {"spoken":"","on_screen_text":"","cta":""},
+ "replication_brief": {"must_keep":["..."],"variables_to_test":["..."],"iteration_prompt":"..."},
+ "summary_markdown": "设计师可读完整摘要：漏斗结论+七层要点+复刻建议"
+}""" % (
+        media_desc, asset.get("filename") or "",
+        "图片/静帧：beats 写 1–2 个信息层级（主视觉→卖点字→CTA）；L1–L7 仍须完整。\n" if not is_video
+        else "视频：beats 覆盖实际出现的 Opening/Context/Tension/Delivery/Validation/Shift/Close；"
+             "craft 写清主光、景别序列、运镜意图、转场类型、剪辑节奏（前紧后证与否）。\n")
+
+
+def naming_prompt(fields, products, understanding):
+    plist = "\n".join("%d | %s | %s" % (p["id"], p["spu"] or "-", p["title"] or "") for p in products[:400])
+    u_brief = understanding_summary(understanding)[:1800]
+    return """你是跨境电商广告素材命名专家。请基于「已完成的内容理解」和命名知识库，输出命名字段与补充标签。
+
+【内容理解摘要（EFD-7）】
+%s
+
+【命名规范字典】优先选已有可选值（输出英文 value）；没有贴切值时可 is_new=true（英文 PascalCase，无空格下划线）。
+%s
+
+【商品库】id | SPU | 标题。按理解稿中的商品，给出最多5个候选。
+%s
+
+【AI 补充标签】3~6 个，分类如：人物、主色调、景别、开头钩子、口播、氛围等；含 category/cn/en。
+
+只输出 JSON：
+{
+ "description": "一两句中文（可与理解稿 one_liner 对齐）",
+ "product_hint": "",
+ "product_candidates": [{"id":0,"confidence":0.0,"reason":""}],
+ "fields": {"<key>": {"value":"","cn":"","is_new":false,"confidence":0.0,"reason":""}},
+ "ai_tags": [{"category":"","cn":"","en":""}]
+}""" % (u_brief or "（理解稿为空）", spec_prompt(fields), plist or "（商品库为空）")
+
+
 def analyze_asset(c, aid, frames):
     s = get_settings(c)
     fields = load_fields(c)
@@ -792,7 +952,8 @@ def analyze_asset(c, aid, frames):
     values = default_values(c, s, fields, asset, product)
     ai_tags = []
     description = ""
-    raw = None
+    understanding = None
+    raw = {"pipeline": "efd7-v1"}
     mode = "ai"
 
     if not s.get("ai_api_key"):
@@ -804,37 +965,29 @@ def analyze_asset(c, aid, frames):
                     if (v["en"] and len(v["en"]) > 2 and v["en"].lower() in low) or (v["cn"] and v["cn"] in asset["filename"]):
                         values[f["key"]] = enum_value(v, "filename", 0.6, "文件名包含该词")
                         break
-        description = "未配置 AI Key：已按文件类型/文件名预填，其余请手动选择（在「设置」中配置后可自动识别）"
+        understanding = offline_understanding(asset, values)
+        description = understanding.get("one_liner") or "未配置 AI Key：已预填命名字段"
+        raw["understanding"] = understanding
     else:
         media_desc = {"image": "图片", "video": "视频（以下为按时间顺序抽取的关键帧）", "gif": "GIF 动图"}[asset["media_type"]]
-        plist = "\n".join("%d | %s | %s" % (p["id"], p["spu"] or "-", p["title"] or "") for p in products[:400])
-        prompt = """你是资深的跨境电商广告素材分析师。请识别这份广告素材，并按照命名规范输出结构化标签。
-
-素材类型：%s；原始文件名：%s
-
-【命名规范字典】请为每个字段选择最贴切的一个值，优先使用已有可选值（输出其英文值）；如果没有任何可选值贴切，可以提出新值并标记 is_new=true（英文值请用 PascalCase 或已有风格，不含空格和下划线）。
-%s
-
-【商品库】格式：id | SPU | 标题。请根据画面中的商品判断最可能是哪几款（按可能性排序，最多5个）。没有商品库或无法判断时返回空数组。
-%s
-
-【AI 补充标签】在规范之外，补充 3~6 个对广告分析有价值的标签（如：人物性别/人种、主色调、镜头景别、开头钩子类型、是否有字幕/口播、氛围情绪、产品展示角度等），每个标签需有分类 category（中文）、中文 cn、英文 en（PascalCase，无空格）。
-
-只输出 JSON：
-{
- "description": "一两句中文描述素材内容",
- "product_hint": "画面中商品的简要描述（品类/颜色/款式）",
- "product_candidates": [{"id": 0, "confidence": 0.0, "reason": ""}],
- "fields": {"<字段key>": {"value": "<英文值>", "cn": "<中文值>", "is_new": false, "confidence": 0.0, "reason": "<简短依据>"}},
- "ai_tags": [{"category": "", "cn": "", "en": ""}]
-}""" % (media_desc, asset["filename"], spec_prompt(fields), plist or "（商品库为空）")
-        content = [{"type": "text", "text": prompt}] + [img_part(f, "low" if len(frames) > 2 else "high") for f in frames[:8]]
-        raw = ai_chat(s, [{"role": "system", "content": "You are a precise ad creative tagging assistant. Reply with JSON only."},
-                          {"role": "user", "content": content}])
-        description = raw.get("description") or ""
+        frames_parts = [img_part(f, "low" if len(frames) > 2 else "high") for f in frames[:8]]
+        # 第一份：内容理解（EFD-7）
+        u_content = [{"type": "text", "text": understand_prompt(asset, media_desc)}] + frames_parts
+        u_raw = ai_chat(s, [
+            {"role": "system", "content": "You are an advertising-effectiveness director. Apply EFD-7 rigorously. Reply with JSON only."},
+            {"role": "user", "content": u_content}])
+        understanding = normalize_understanding(u_raw, asset["media_type"])
+        raw["understanding"] = understanding
+        # 第二份：基于理解的命名
+        n_content = [{"type": "text", "text": naming_prompt(fields, products, understanding)}] + frames_parts[:4]
+        naming = ai_chat(s, [
+            {"role": "system", "content": "You name ad creatives from an existing understanding brief and a controlled taxonomy. JSON only."},
+            {"role": "user", "content": n_content}])
+        raw["naming"] = naming
+        description = naming.get("description") or understanding.get("one_liner") or ""
 
         cands = []
-        for cd in raw.get("product_candidates") or []:
+        for cd in naming.get("product_candidates") or []:
             try:
                 pid = int(cd.get("id"))
             except (TypeError, ValueError):
@@ -858,19 +1011,19 @@ def analyze_asset(c, aid, frames):
                         product = by_id[pid]
                         product_reason = "图像比对：" + (pick.get("reason") or "")
                         raw["product_pick"] = pick
-                except Exception as e:  # 比对失败时沿用第一候选
+                except Exception as e:
                     raw["product_pick_error"] = str(e)
         if product:
             pf = next((f for f in fields if f["type"] == "product"), None)
             if pf:
                 values[pf["key"]] = {"product_id": product["id"], "spu": product["spu"], "title": product["title"],
-                                     "source": "ai", "reason": product_reason}
+                                     "source": "ai", "reason": product_reason or (understanding.get("product_on_screen") or "")}
 
         w = code_width(s)
         for f in fields:
             if f["type"] not in ("enum", "text") or f["key"] == "designer":
                 continue
-            r = (raw.get("fields") or {}).get(f["key"])
+            r = (naming.get("fields") or {}).get(f["key"])
             if not isinstance(r, dict) or not r.get("value"):
                 continue
             conf = float(r.get("confidence") or 0)
@@ -888,7 +1041,7 @@ def analyze_asset(c, aid, frames):
                                     "code": gen_code(en, r.get("cn"), [x["code"] for x in f["values"]], w),
                                     "is_new": True, "source": "ai", "confidence": conf, "reason": r.get("reason") or ""}
         mx = int(s.get("ai_tags_max") or 3)
-        for i, t in enumerate(raw.get("ai_tags") or []):
+        for i, t in enumerate(naming.get("ai_tags") or []):
             if isinstance(t, dict) and (t.get("cn") or t.get("en")):
                 ai_tags.append({"category": t.get("category") or "其他", "cn": t.get("cn") or t.get("en"),
                                 "en": clean_seg(t.get("en") or t.get("cn"), s.get("separator")), "enabled": i < mx})
@@ -905,6 +1058,7 @@ def analyze_asset(c, aid, frames):
     c.commit()
     out = get_asset(c, aid)
     out["mode"] = mode
+    out["understanding"] = understanding or ((out.get("ai_raw") or {}).get("understanding"))
     return out
 
 

@@ -88,6 +88,24 @@ table.t input { width: 100%; }
 
 .qitem { margin-bottom: 16px; }
 .qhead { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+
+/* EFD-7 内容理解 */
+.efd { border: 1px solid #dfe3f5; background: linear-gradient(180deg, #f7f8ff, #fff); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+.efd-top { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.efd-top > div:first-child { flex: 1; min-width: 200px; }
+.efd-one { font-size: 14px; font-weight: 600; margin: 4px 0 10px; line-height: 1.45; }
+.efd-layers { display: grid; gap: 8px; margin: 10px 0; }
+.efd-layer { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.efd-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.efd-e { display: flex; flex-wrap: wrap; gap: 6px; }
+.efd-e span { font-size: 12px; background: #f4f5fb; border-radius: 6px; padding: 2px 7px; color: #3a4056; }
+.efd-i { font-size: 12px; color: var(--ok); margin-top: 4px; }
+.efd-beats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 10px 0; }
+.efd-beat { background: #fff; border: 1px dashed #d5d9ec; border-radius: 8px; padding: 8px; font-size: 12px; }
+.efd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+@media (max-width: 820px) { .efd-grid { grid-template-columns: 1fr; } }
+.efd-brief { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.efd-prompt { white-space: pre-wrap; word-break: break-word; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.5; margin: 6px 0 0; max-height: 180px; overflow: auto; }
 .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #ccd; border-top-color: var(--pri); border-radius: 50%; animation: sp 0.8s linear infinite; vertical-align: -2px; }
 @keyframes sp { to { transform: rotate(360deg); } }
 

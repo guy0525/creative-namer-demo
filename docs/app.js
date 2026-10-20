@@ -127,20 +127,58 @@ function demoAiTags() {
   }
   return picked;
 }
+function demoUnderstanding(media_type, filename, values) {
+  const spu = Object.values(values || {}).find((v) => v && v.spu)?.spu || '商品';
+  const isVid = media_type === 'video' || media_type === 'gif';
+  const layers = [
+    ['L1', '注意力捕获', '钩子率', 4, 'pass', ['开场出现强对比或痛点提问字幕', '首帧商品/人物清晰入画'], '停滑决定一切曝光机会', '强化前 1.5s 的视觉打断与「你是不是…」句式'],
+    ['L2', '对象认同', '前段留存', 4, 'pass', ['场景/模特年龄感贴近目标人群', `卖点围绕 ${spu} 的使用情境`], '不对盘的人留下也会浪费点击', '在钩子中点名具体人群情境（通勤/健身/职场）'],
+    ['L3', '叙事说服结构', 'hold', 3, 'weak', ['有问题→展示→结果的雏形', '中段证明略短'], '结构决定是否看完并被说服', '补齐 Tension→Validation 两拍，避免过早硬推'],
+    ['L4', '信任与证据', '停留', 3, 'weak', ['有面料/穿着特写', '缺少前后对比或数据'], '不信就不会点', '加入 Before/After 或实测细节特写 2–3 秒'],
+    ['L5', '视听语言', '掉点', 4, 'pass', ['景别从全身切到特写', '主光干净、背景不抢戏'], '工艺服务说服，不服务炫技', '转场用动作匹配，避免无意义闪切'],
+    ['L6', '信息与台词', 'CTR', 3, 'weak', ['有字幕卖点', 'CTA 出现偏晚或较弱'], '说不清下一步就流失', '在后 20% 明确「点击查看同款/优惠」'],
+    ['L7', '可复刻变量', '对照实验', 4, 'pass', ['钩子句式与证明方式可拆成变量'], '可复刻才能规模化迭代', '见 iteration_prompt'],
+  ].map(([id, name, metric, score, verdict, evidence, why, improve], i) => ({
+    id, name, impact: 7 - i, score, verdict, metric_proxy: metric, evidence, why_it_matters: why, improve,
+  }));
+  const iteration = `复刻一条「痛点钩子 + 单品特写证明」片：保持商品为 ${spu}、表达方式偏实拍、主卖点不变。变量：①开场 0–2s 换成痛点提问字幕；②3–8s 加入面料/弹力特写作证据；③结尾 CTA 改为「点进商详看同款」。禁止改品牌调性与虚假对比。输出分镜表（秒数/画面/字幕/口播）。`;
+  return {
+    methodology: 'EFD-7', methodology_name: '效果漏斗拆解法 EFD-7', media_type,
+    one_liner: `演示理解：以 ${spu} 为核心的效果向广告拆解（EFD-7），先验钩子与认同，再看结构与证据。`,
+    product_on_screen: spu,
+    layers,
+    beats: isVid ? [
+      { t: '0-3s', name: 'Opening', visual: '钩子画面/字幕抢注意力', audio: '可选口播提问', intent: '停滑+建立议题' },
+      { t: '3-10s', name: 'Tension/Delivery', visual: '痛点或场景 → 产品入画', audio: '卖点口播', intent: '制造缺口并给出方案' },
+      { t: '10-20s', name: 'Validation', visual: '特写/对比证明', audio: '证据句', intent: '建立信任' },
+      { t: '末段', name: 'Close', visual: '商品+CTA', audio: '行动指令', intent: '促成点击' },
+    ] : [{ t: '静帧', name: 'Primary', visual: '主视觉层级：人物/产品→卖点字', audio: '-', intent: '停滑并传达核心利益' }],
+    craft: { lighting: '主光柔、轮廓分离主体', camera: '中近景→特写', composition: '产品占视觉重心', transitions: isVid ? '动作匹配切' : '—', pacing: isVid ? '前紧后证' : '一眼读懂' },
+    script: { spoken: isVid ? '（演示）你是不是也…？试试这件…' : '', on_screen_text: '痛点/卖点字幕', cta: '点击查看同款' },
+    replication_brief: {
+      must_keep: [`商品识别为 ${spu}`, '卖点表达清晰', '前3秒议题明确'],
+      variables_to_test: ['钩子句式', '证据形式（特写/对比/口碑）', 'CTA 措辞与出现时机'],
+      iteration_prompt: iteration,
+    },
+    summary_markdown: layers.map((l) => `**${l.id} ${l.name}**（${l.verdict} ${l.score}/5）：${(l.evidence || []).join('；')}`).join('\n'),
+  };
+}
+
 function demoCreateAsset({ filename, media_type, size, thumb, blobUrl }) {
   const seq = ++DEMO_SESSION.seq;
   const id = seq;
   const values = demoDefaultValues(media_type, filename);
   const ai_tags = demoAiTags();
   const names = demoBuildNames(seq, values, ai_tags);
+  const understanding = demoUnderstanding(media_type, filename, values);
   DEMO_SESSION.taken.add(names.short_name);
   const a = {
     id, seq, filename, ext: (filename.split('.').pop() || '').toLowerCase(), media_type, size: size || 0,
     file_path: blobUrl || '', thumb: thumb || null, product_id: (Object.values(values).find((v) => v && v.product_id) || {}).product_id || null,
-    description: '演示识别：已根据文件类型、文件名与画面特征预填命名字段与 AI 标签（在线演示不调用真实 AI）。',
+    description: understanding.one_liner,
     full_name: names.full_name, short_name: names.short_name, media_ids: [], status: 'pending',
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(), learned_ids: [], short_history: '',
-    values, ai_tags, mode: 'demo', demo: true,
+    values, ai_tags, understanding, ai_raw: { pipeline: 'efd7-demo', understanding }, mode: 'demo', demo: true,
   };
   DEMO_SESSION.assets[id] = a;
   return clone(a);
@@ -166,10 +204,12 @@ async function api(method, path, body, opts = {}) {
       if (!a) throw new Error('演示素材不存在');
       if (body && body.thumb) a.thumb = body.thumb;
       if (!a.ai_tags.length) a.ai_tags = demoAiTags();
+      if (!a.understanding) a.understanding = demoUnderstanding(a.media_type, a.filename, a.values);
       Object.assign(a, demoBuildNames(a.seq, a.values, a.ai_tags));
       a.mode = 'demo';
       a.status = 'pending';
-      a.description = '演示识别完成：已匹配商品与命名字段，并补充 AI 标签。可修改后点「保存命名」（仅保存在本页会话）。';
+      a.description = a.understanding.one_liner || a.description;
+      a.ai_raw = { pipeline: 'efd7-demo', understanding: a.understanding };
       DEMO_SESSION.assets[a.id] = a;
       return clone(a);
     }
@@ -308,6 +348,44 @@ function productOptions(selectedId) {
     `<option value="${p.id}" ${String(p.id) === String(selectedId) ? 'selected' : ''}>${esc(p.spu)} · ${esc((p.title || '').slice(0, 40))}</option>`).join('');
 }
 
+function understandingHtml(u) {
+  if (!u) return '';
+  const vCls = (v) => ({ pass: 'ok', weak: 'new', fail: 'bad' }[v] || '');
+  const layers = (u.layers || []).map((ly) => `<div class="efd-layer">
+      <div class="efd-h"><span class="badge ${vCls(ly.verdict)}">${esc(ly.id || '')}</span><b>${esc(ly.name || '')}</b>
+        <span class="small muted">${ly.score != null ? `${ly.score}/5` : ''} · ${esc(ly.metric_proxy || '')}${ly.impact != null ? ` · 影响力${ly.impact}/7` : ''}</span></div>
+      ${ly.why_it_matters ? `<div class="small muted">${esc(ly.why_it_matters)}</div>` : ''}
+      <div class="efd-e">${(ly.evidence || []).map((e) => `<span>${esc(e)}</span>`).join('') || '<span class="muted">暂无证据</span>'}</div>
+      ${ly.improve ? `<div class="efd-i">改进：${esc(ly.improve)}</div>` : ''}</div>`).join('');
+  const beats = (u.beats || []).length ? `<div class="efd-beats">${u.beats.map((b) => `<div class="efd-beat"><b>${esc(b.t || '')}</b> ${esc(b.name || '')}
+      <div class="small muted">${esc(b.visual || '')}${b.audio ? ' · ' + esc(b.audio) : ''}</div>
+      <div class="small">${esc(b.intent || '')}</div></div>`).join('')}</div>` : '';
+  const craft = u.craft || {}, script = u.script || {}, brief = u.replication_brief || {};
+  return `<div class="efd">
+    <div class="efd-top"><div><b>① 内容理解</b> <span class="badge ai">${esc(u.methodology_name || 'EFD-7')}</span>
+      <div class="small muted">按广告效果影响力从大到小拆解；上层不及格时，下层再精美也救不了投放。</div></div>
+      <button type="button" class="btn sm" data-act="copyiter">复制迭代提示词</button>
+      <button type="button" class="btn sm ghost" data-act="copyund">复制理解摘要</button></div>
+    <div class="efd-one">${esc(u.one_liner || '')}</div>
+    ${u.product_on_screen ? `<div class="small muted">画面商品：${esc(u.product_on_screen)}</div>` : ''}
+    <div class="efd-layers">${layers}</div>
+    ${beats}
+    <div class="efd-grid">
+      <div><h4 class="sub-h">视听语言</h4>
+        <div class="small">灯光 ${esc(craft.lighting || '—')} · 摄影 ${esc(craft.camera || '—')}</div>
+        <div class="small">构图 ${esc(craft.composition || '—')} · 转场 ${esc(craft.transitions || '—')} · 节奏 ${esc(craft.pacing || '—')}</div></div>
+      <div><h4 class="sub-h">台词与信息</h4>
+        <div class="small">口播：${esc(script.spoken || '—')}</div>
+        <div class="small">字幕：${esc(script.on_screen_text || '—')}</div>
+        <div class="small">CTA：${esc(script.cta || '—')}</div></div>
+    </div>
+    <div class="efd-brief"><h4 class="sub-h">可复刻 / 迭代</h4>
+      <div class="small">必须保留：${(brief.must_keep || []).map(esc).join('；') || '—'}</div>
+      <div class="small">可测变量：${(brief.variables_to_test || []).map(esc).join('；') || '—'}</div>
+      <pre class="efd-prompt" data-r="iter">${esc(brief.iteration_prompt || '')}</pre></div>
+  </div>`;
+}
+
 class Editor {
   constructor(asset, root, opts = {}) {
     this.a = asset;
@@ -315,6 +393,7 @@ class Editor {
     this.opts = opts;
     this.values = clone(asset.values) || {};
     this.tags = clone(asset.ai_tags) || [];
+    this.understanding = asset.understanding || (asset.ai_raw && asset.ai_raw.understanding) || null;
     this.preview = debounce(() => this.refreshNames(), 120);
     this.render();
   }
@@ -371,12 +450,14 @@ class Editor {
 
   render() {
     const a = this.a;
-    this.root.innerHTML = `<div class="editor">
+    this.root.innerHTML = `${understandingHtml(this.understanding)}
+      <div class="editor">
       <div class="ed-media">${this.mediaHtml()}
         <div class="ed-desc"><b>${esc(a.filename)}</b>${a.size ? ' · ' + (a.size / 1048576).toFixed(1) + 'MB' : ''}</div>
-        <div class="ed-desc">${esc(a.description || '')}</div></div>
+        <div class="ed-desc muted">${esc(a.description || '')}</div></div>
       <div>
         <div class="names">
+          <div class="row" style="margin-bottom:6px"><b>② 素材命名</b><span class="small muted">基于内容理解 + 知识库规范</span></div>
           <div class="nm"><span>完整命名</span><code data-r="full"></code><button class="btn sm" data-act="copyfull">复制</button></div>
           <div class="nm"><span>短名称</span><code class="short" data-r="short"></code><button class="btn sm" data-act="copyshort">复制</button>
             <span class="small muted" data-r="len"></span></div>
@@ -386,7 +467,7 @@ class Editor {
         <div class="frow"><div class="fl">媒体素材ID</div><div class="fctl"><input data-act="media" style="flex:1" placeholder="Meta creative id / video id / image hash，多个用逗号分隔（可选，导入数据时会自动学习）" value="${esc((a.media_ids || []).join(','))}"></div></div>
         <div class="row" style="margin-top:12px">
           <button class="btn" data-act="reanalyze">↻ AI 重新识别</button>
-          ${a.file_path ? `<a class="btn" href="/files/${a.id}?download=1">⬇ 下载（已重命名）</a>` : ''}
+          ${a.file_path && !String(a.file_path).startsWith('blob:') ? `<a class="btn" href="/files/${a.id}?download=1">⬇ 下载（已重命名）</a>` : ''}
           <span class="grow"></span>
           <span class="small muted" data-r="saved">${a.status === 'named' ? '已保存' : '未保存'}</span>
           <button class="btn pri" data-act="save">保存命名</button>
@@ -481,6 +562,17 @@ class Editor {
     const act = b.dataset.act;
     if (act === 'copyfull') copy($('[data-r=full]', this.root).textContent);
     if (act === 'copyshort') copy($('[data-r=short]', this.root).textContent);
+    if (act === 'copyiter') {
+      const t = (this.understanding && this.understanding.replication_brief && this.understanding.replication_brief.iteration_prompt)
+        || $('[data-r=iter]', this.root)?.textContent || '';
+      copy(t || '暂无迭代提示词');
+    }
+    if (act === 'copyund') {
+      const u = this.understanding || {};
+      const lines = [u.one_liner || '', '', ...(u.layers || []).map((ly) => `${ly.id} ${ly.name} [${ly.verdict || ''}] ${ly.score != null ? ly.score + '/5' : ''}\n- ${(ly.evidence || []).join('；')}\n- 改进：${ly.improve || ''}`)];
+      if (u.replication_brief && u.replication_brief.iteration_prompt) lines.push('', '迭代提示词：', u.replication_brief.iteration_prompt);
+      copy(lines.filter(Boolean).join('\n'));
+    }
     if (act === 'addvalue') this.addValue(b.dataset.k);
     if (act === 'today') {
       const d = new Date();
@@ -515,6 +607,7 @@ class Editor {
       const a = await api('POST', `/api/assets/${this.a.id}/analyze`, { frames: frames || (this.a.thumb ? [this.a.thumb] : []) });
       if (a.mode === 'offline') toast('未配置 AI Key，仅按文件名/类型预填');
       this.a = a; this.values = clone(a.values); this.tags = clone(a.ai_tags);
+      this.understanding = a.understanding || (a.ai_raw && a.ai_raw.understanding) || null;
       this.render();
     } catch (e) { fail(e); btn.disabled = false; btn.textContent = '↻ AI 重新识别'; }
   }
@@ -540,10 +633,11 @@ const QUEUE = [];
 
 function pageUpload(main) {
   const demoNote = STATIC_DEMO
-    ? `<div class="card" style="border-color:#c9cdf3;background:#f7f8ff">在线演示模式：上传后会<strong>模拟 AI 识别</strong>并按当前命名规范生成完整命名 / 短名称（不调用真实 AI、不落库）。也可点「一键试用演示素材」。</div>`
-    : (ST.settings.ai_api_key_set ? '' : '<div class="card" style="border-color:#f5d48a;background:#fffaf0">尚未配置 AI Key：上传后只会按文件类型和文件名预填。请到 <a href="#/settings">设置</a> 填写 OpenAI 兼容接口。</div>');
+    ? `<div class="card" style="border-color:#c9cdf3;background:#f7f8ff">在线演示：会模拟输出 <b>① EFD-7 内容理解</b> 与 <b>② 命名结果</b>（不调用真实 AI、不落库）。可点「一键试用演示素材」或自行上传。</div>`
+    : (ST.settings.ai_api_key_set ? '<div class="card" style="border-color:#cfe9d8;background:#f1faf5">已配置 AI：识别时先跑内容理解（EFD-7），再打命名。方法论说明见仓库 <code>docs/methodology-efd7.md</code>。</div>'
+      : '<div class="card" style="border-color:#f5d48a;background:#fffaf0">尚未配置 AI Key：上传后只会预填命名字段并给出理解骨架。请到 <a href="#/settings">设置</a> 填写 OpenAI 兼容接口以启用完整 EFD-7 理解。</div>');
   main.innerHTML = `<h1>上传素材 &amp; AI 标准化命名</h1>
-    <p class="sub">AI 识别画面内容 → 匹配商品库 SPU → 按知识库命名规范打标签，并补充规范外的 AI 标签 → 生成完整命名与可还原的短名称。每个字段都可手动修改。</p>
+    <p class="sub">AI 先按「效果漏斗拆解法 EFD-7」输出完整内容理解（心理学×叙事×视听×台词），再基于理解结果与知识库输出命名。设计师可复制迭代提示词做复刻与 A/B。</p>
     ${demoNote}
     ${!STATIC_DEMO && !PRODUCTS.length ? '<div class="card" style="border-color:#f5d48a;background:#fffaf0">商品库为空：AI 无法识别 SPU。请先到 <a href="#/products">商品库</a> 同步 Shopify / Meta 目录。</div>' : ''}
     <div class="row" style="margin-bottom:12px">

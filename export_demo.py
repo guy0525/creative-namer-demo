@@ -96,6 +96,9 @@ def main():
     with open(os.path.join(OUT, "index.html"), "w", encoding="utf-8") as fp:
         fp.write(html)
     open(os.path.join(OUT, ".nojekyll"), "w").close()
+    meth = os.path.join(HERE, "methodology-efd7.md")
+    if os.path.isfile(meth):
+        shutil.copy(meth, os.path.join(OUT, "methodology-efd7.md"))
     c.close()
     shutil.rmtree(TMP, ignore_errors=True)
     print("已导出 %d 个数据文件到 %s" % (n, OUT))
