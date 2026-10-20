@@ -453,13 +453,12 @@ async function detectCuts(el, duration) {
   const step = Math.max(0.2, Math.min(duration, 180) / 160);
   const cv = document.createElement('canvas');
   cv.width = 48; cv.height = 27;
-  const ds = [];
-  let prev = null;
+  const ds = [], sigs = [];
   for (let t = 0; t < duration - 0.05; t += step) {
     await seekTo(el, t);
     const s = frameSig(el, cv);
-    if (prev) ds.push({ t, d: sigDiff(prev, s) });
-    prev = s;
+    if (sigs.length) ds.push({ t, d: sigDiff(sigs[sigs.length - 1], s) });
+    sigs.push(s);
   }
   const sorted = ds.map((x) => x.d).sort((a, b) => a - b);
   const med = sorted[Math.floor(sorted.length / 2)] || 0;
@@ -470,14 +469,27 @@ async function detectCuts(el, duration) {
     const local = x.d >= (ds[i - 1]?.d || 0) && x.d >= (ds[i + 1]?.d || 0);
     if (x.d > thr && local && x.t - (cuts[cuts.length - 1] ?? 0) >= 0.45) cuts.push(+x.t.toFixed(2));
   }
-  return cuts;
+  // 渐变转场 / AI 变形一镜到底没有单帧突变：镜头内相对段首画面累计变化超过阈值时切出续段
+  const drift = Math.max(0.15, med * 2.5), soft = [], b = [0, ...cuts, duration];
+  for (let k = 0; k < b.length - 1; k++) {
+    let ia = Math.round(b[k] / step);
+    for (let i = ia + 1; i < sigs.length && i * step < b[k + 1] - 0.6; i++) {
+      if ((i - ia) * step >= 1 && sigDiff(sigs[ia], sigs[i]) > drift) { soft.push(+(i * step).toFixed(2)); ia = i; }
+    }
+  }
+  return { cuts, soft };
 }
 
-function buildClips(cuts, duration) {
+function buildClips({ cuts, soft = [] }, duration) {
   const bounds = [0, ...cuts, duration];
   let clips = [];
   for (let i = 0; i < bounds.length - 1; i++) {
     const st = bounds[i], en = bounds[i + 1];
+    const subs = [st, ...soft.filter((t) => t > st && t < en), en];
+    if (subs.length > 2) {
+      for (let k = 0; k < subs.length - 1; k++) clips.push({ start: +subs[k].toFixed(2), end: +subs[k + 1].toFixed(2), cont: k > 0 });
+      continue;
+    }
     // 超长单镜头（如整段口播）按 ≤5s 拆成同镜头续段，便于逐段理解与混剪
     const parts = Math.max(1, Math.ceil((en - st) / 5));
     for (let k = 0; k < parts; k++) {
@@ -818,7 +830,7 @@ class Editor {
           ${pred && pred.spend_tier ? `<div><span>效果预估</span><b>${esc(pred.spend_tier)}</b> 档 · ROAS ${pred.roas_low ?? '-'}–${pred.roas_high ?? '-'}</div>` : ''}
         </div>
         <div class="row" style="margin-top:10px">
-          ${a.showcase ? '<span class="badge ok">真实素材 · 真实 AI 分析结果（只读）</span>' : '<button class="btn sm" data-act="reanalyze">↻ AI 重新识别</button>'}
+          ${a.showcase ? '<span class="badge ok">真实素材 · AI 离线分析（只读）</span>' : '<button class="btn sm" data-act="reanalyze">↻ AI 重新识别</button>'}
           ${a.file_path && !a.showcase && !String(a.file_path).startsWith('blob:') ? `<a class="btn sm" href="/files/${a.id}?download=1">⬇ 下载（已重命名）</a>` : ''}
         </div>
       </div>
@@ -1086,7 +1098,7 @@ function pageUpload(main) {
 async function renderShowcase(el) {
   const list = await fetch(staticFile('/api/showcase')).then((r) => (r.ok ? r.json() : [])).catch(() => []);
   if (!list.length || !el.isConnected) return;
-  el.innerHTML = `<div class="card"><h3>真实素材 AI 分析案例 <span class="small muted">真实投放素材 + 真实 AI 输出，点击查看完整三层理解与命名</span></h3>
+  el.innerHTML = `<div class="card"><h3>真实素材 AI 分析案例 <span class="small muted">真实广告素材，按同一套切镜与三层方法由 AI 逐镜分析（离线生成；判断层基准为演示账户数据），点击查看完整理解与命名</span></h3>
     <div class="sc-grid">${list.map((a) => `<button type="button" class="sc" data-id="${a.id}">
       <div class="sc-img">${a.thumb ? `<img src="${a.thumb}">` : ''}${a.card.tier ? `<span class="tier-mini tier-${esc(a.card.tier)}">${esc(a.card.tier)}</span>` : ''}</div>
       <div class="sc-b"><code>${esc(a.short_name)}</code>

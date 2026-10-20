@@ -3,3 +3,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+showcase_input/
+.venv_tools/
+showcase_work/
