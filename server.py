@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""素材命名中台 - 本地服务（仅依赖 Python 3 标准库）"""
+"""创意洞察 - 本地服务（仅依赖 Python 3 标准库）"""
 import base64
 import csv
 import datetime
@@ -3102,7 +3102,7 @@ if __name__ == "__main__":
     init_db()
     host = os.environ.get("HOST", "127.0.0.1")
     srv = ThreadingHTTPServer((host, PORT), Handler)
-    print("素材命名中台已启动: http://%s:%d%s" % (host, PORT, "（只读）" if READONLY else ""))
+    print("创意洞察已启动: http://%s:%d%s" % (host, PORT, "（只读）" if READONLY else ""))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
