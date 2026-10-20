@@ -5,6 +5,7 @@ import csv
 import datetime
 import io
 import json
+import math
 import mimetypes
 import os
 import random
@@ -39,6 +40,7 @@ DEFAULT_SETTINGS = {
     "ai_tag_joiner": "+",
     "ai_base_url": "https://api.openai.com/v1",
     "ai_model": "gpt-4o-mini",
+    "ai_asr_model": "whisper-1",
     "ai_api_key": "",
     "meta_api_version": "v21.0",
     "meta_token": "",
@@ -795,132 +797,355 @@ EFD_LAYERS = [
     ("L7", "可复刻变量", "对照实验", "必须保留什么、可测什么、如何写迭代提示词"),
 ]
 
+DEPARTMENTS = [("director", "导演/编剧"), ("dop", "摄影指导"), ("gaffer", "灯光"), ("art", "美术/道具"),
+               ("wardrobe_makeup", "服装/化妆"), ("cast", "演员/调度"), ("editor_vfx", "剪辑/包装"), ("sound", "录音/音乐")]
 
-def efd_layer_shell():
-    return [{"id": lid, "name": name, "impact": 8 - i, "score": None, "verdict": "unknown",
-             "metric_proxy": metric, "question": q, "evidence": [], "why_it_matters": "", "improve": ""}
-            for i, (lid, name, metric, q) in enumerate(EFD_LAYERS)]
+CLIP_ROLES = "Hook/Context/Problem/Agitate/Demo/Proof/Benefit/Offer/CTA/Brand/Bridge"
+
+COG_FRAMEWORKS = [
+    "Google ABCD（Attention/Branding/Connection/Direction，Kantar 验证与短期销量相关）",
+    "Schwartz 用户认知五阶段（Breakthrough Advertising）",
+    "ELM 精细加工可能性模型（中心路径/边缘路径）",
+    "Cialdini 影响力七原则",
+    "Fogg 行为模型 B=MAP（动机×能力×提示）",
+    "FAB 卖点结构 + JTBD/马斯洛 买点动机",
+    "Plutchik 情绪轮（情绪氛围与强度）",
+    "Meta 创意最佳实践（前3秒、无声可读、竖版全屏、原生感、产品早出现）",
+]
+
+
+def _lst(x):
+    if isinstance(x, list):
+        return x
+    return [] if x in (None, "") else [x]
+
+
+def _dct(x):
+    return x if isinstance(x, dict) else {}
+
+
+def fmt_s(x):
+    try:
+        return "%.1fs" % float(x)
+    except (TypeError, ValueError):
+        return "?"
+
+
+def slim_json(o, limit=14000):
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items() if k != "thumb"}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
+    return json.dumps(strip(o), ensure_ascii=False, separators=(",", ":"))[:limit]
+
+
+def norm_clips(meta, n_frames):
+    """浏览器按画面突变切好的碎镜 → [{id,start,end,cont}]，与关键帧一一对应。"""
+    meta = meta or {}
+    clips = []
+    for m in _lst(meta.get("clips")):
+        try:
+            st, en = float(m.get("start") or 0), float(m.get("end") or 0)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        clips.append({"id": "C%02d" % (len(clips) + 1), "start": round(st, 2), "end": round(max(en, st), 2),
+                      "cont": bool(m.get("cont"))})
+    if len(clips) == n_frames and clips:
+        return clips, "auto_cut"
+    try:
+        dur = float(meta.get("duration") or 0)
+    except (TypeError, ValueError):
+        dur = 0
+    n = max(1, n_frames)
+    return [{"id": "C%02d" % (i + 1), "start": round(dur * i / n, 2), "end": round(dur * (i + 1) / n, 2), "cont": False}
+            for i in range(n)], "uniform"
+
+
+def clip_frame_parts(frames, clips, detail):
+    parts = []
+    for f, cl in zip(frames, clips):
+        parts.append({"type": "text", "text": "【%s】%s–%s%s 关键帧" % (
+            cl["id"], fmt_s(cl["start"]), fmt_s(cl["end"]), "（与上一分镜为同一镜头的延续）" if cl.get("cont") else "")})
+        parts.append(img_part(f, detail))
+    return parts
+
+
+def transcribe(s, path):
+    """OpenAI 兼容 /audio/transcriptions（whisper），返回带时间戳的口播；失败返回 None。"""
+    if not path or not os.path.isfile(path) or os.path.getsize(path) > 24 * 1024 * 1024:
+        return None
+    base = (s.get("ai_base_url") or "https://api.openai.com/v1").rstrip("/")
+    bd = "----cn%08x" % random.getrandbits(32)
+    body = io.BytesIO()
+    for k, v in (("model", s.get("ai_asr_model") or "whisper-1"), ("response_format", "verbose_json")):
+        body.write(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n" % (bd, k, v)).encode())
+    body.write(("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+                "Content-Type: application/octet-stream\r\n\r\n" % (bd, os.path.basename(path))).encode())
+    with open(path, "rb") as fp:
+        body.write(fp.read())
+    body.write(("\r\n--%s--\r\n" % bd).encode())
+    req = urllib.request.Request(base + "/audio/transcriptions", data=body.getvalue(), headers={
+        "Authorization": "Bearer " + s["ai_api_key"], "Content-Type": "multipart/form-data; boundary=" + bd, "User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=180) as r:
+        d = json.loads(r.read().decode("utf-8"))
+    segs = [{"start": round(float(x.get("start") or 0), 2), "end": round(float(x.get("end") or 0), 2),
+             "text": (x.get("text") or "").strip()} for x in d.get("segments") or [] if (x.get("text") or "").strip()]
+    if not segs and not (d.get("text") or "").strip():
+        return None
+    return {"language": d.get("language") or "", "text": (d.get("text") or "").strip(), "segments": segs}
+
+
+def normalize_fact(f, clips, meta):
+    f = dict(_dct(f))
+    by_id = {str(x.get("id")): x for x in _lst(f.get("clips")) if isinstance(x, dict)}
+    thumbs = [_dct(m).get("thumb") for m in _lst((meta or {}).get("clips"))]
+    out = []
+    for i, cl in enumerate(clips):
+        r = dict(by_id.get(cl["id"]) or {})
+        r.update(id=cl["id"], start=cl["start"], end=cl["end"], dur=round(cl["end"] - cl["start"], 2), cont=cl.get("cont", False))
+        if i < len(thumbs) and thumbs[i]:
+            r["thumb"] = thumbs[i]
+        out.append(r)
+    f["clips"] = out
+    for k in ("products", "scenes", "script", "text_fx", "keywords", "tags"):
+        f[k] = _lst(f.get(k))
+    f["people"] = _dct(f.get("people"))
+    f["people"]["list"] = _lst(f["people"].get("list"))
+    f["people"].setdefault("count", len(f["people"]["list"]))
+    for k in ("audio", "departments", "format"):
+        f[k] = _dct(f.get(k))
+    f["format"]["clip_count"] = len(out)
+    durs = [c["dur"] for c in out if c["dur"] > 0]
+    if durs:
+        f["format"]["avg_clip_s"] = round(sum(durs) / len(durs), 2)
+    f.setdefault("overview", "")
+    return f
+
+
+def normalize_cognition(g):
+    g = dict(_dct(g))
+    for k in ("positioning", "core_attraction", "selling_points", "buying_points", "audience", "persuasion",
+              "abcd", "fogg", "meta_fit"):
+        g[k] = _dct(g.get(k))
+    g["selling_points"]["secondary"] = _lst(g["selling_points"].get("secondary"))
+    g["selling_points"]["primary"] = _dct(g["selling_points"].get("primary"))
+    for k in ("motives", "emotions"):
+        g["buying_points"][k] = _lst(g["buying_points"].get(k))
+    for k in ("principles", "proof_types"):
+        g["persuasion"][k] = _lst(g["persuasion"].get(k))
+    g["clip_roles"] = [x for x in _lst(g.get("clip_roles")) if isinstance(x, dict)]
+    g["tags"] = _lst(g.get("tags"))
+    g["frameworks"] = COG_FRAMEWORKS
+    return g
+
+
+def normalize_judgment(j, bench=None):
+    j = dict(_dct(j))
+    j["prediction"] = _dct(j.get("prediction"))
+    for k in ("funnel", "positives", "negatives", "edits", "keep"):
+        j[k] = _lst(j.get(k))
+    by_id = {x.get("id"): x for x in j["funnel"] if isinstance(x, dict)}
+    j["funnel"] = [dict({"id": lid, "name": name, "metric_proxy": metric}, **{k: v for k, v in _dct(by_id.get(lid)).items()
+                                                                               if k in ("score", "verdict", "reason", "clips")})
+                   for lid, name, metric, _ in EFD_LAYERS]
+    if bench is not None:
+        j["benchmark"] = bench
+    return j
+
+
+def legacy_to_fcj(u, media_type):
+    """旧版 EFD-7 理解稿 → 三层结构（只读展示用）。"""
+    brief = _dct(u.get("replication_brief"))
+    fact = {"overview": u.get("one_liner") or "", "products": [{"id": "G1", "name": u.get("product_on_screen") or ""}],
+            "clips": [{"id": "C%02d" % (i + 1), "start": None, "end": None, "subject": b.get("visual"), "dialogue": b.get("audio"),
+                       "action": b.get("intent"), "label": b.get("t")} for i, b in enumerate(_lst(u.get("beats"))) if isinstance(b, dict)],
+            "format": {}, "script": [], "text_fx": [], "keywords": [], "tags": [], "people": {"list": []}, "scenes": [],
+            "audio": {}, "departments": {}}
+    fact["format"]["clip_count"] = len(fact["clips"])
+    judg = {"prediction": {"summary": "旧版理解稿（EFD-7），请重新识别以获得完整三层拆解。"},
+            "funnel": [{"id": x.get("id"), "name": x.get("name"), "score": x.get("score"), "verdict": x.get("verdict"),
+                        "reason": "；".join(_lst(x.get("evidence")))} for x in _lst(u.get("layers")) if isinstance(x, dict)],
+            "edits": [{"priority": i + 1, "target": x.get("id"), "type": x.get("name"), "change": x.get("improve")}
+                      for i, x in enumerate(_lst(u.get("layers"))) if isinstance(x, dict) and x.get("improve")],
+            "positives": [], "negatives": [], "keep": _lst(brief.get("must_keep"))}
+    if brief.get("iteration_prompt"):
+        judg["edits"].append({"priority": len(judg["edits"]) + 1, "target": "全片", "type": "迭代", "prompt": brief["iteration_prompt"]})
+    return {"version": "fcj-1", "legacy": True, "media_type": media_type, "one_liner": u.get("one_liner") or "",
+            "fact": fact, "cognition": normalize_cognition({}), "judgment": normalize_judgment(judg)}
+
+
+def normalize_understanding(raw_u, media_type):
+    u = dict(raw_u or {}) if isinstance(raw_u, dict) else {}
+    if not u.get("fact") and u.get("layers"):
+        return legacy_to_fcj(u, media_type)
+    u["version"] = "fcj-1"
+    u["media_type"] = media_type
+    f = _dct(u.get("fact"))
+    u["fact"] = normalize_fact(f, [{"id": c.get("id"), "start": c.get("start"), "end": c.get("end"), "cont": c.get("cont")}
+                                   for c in _lst(f.get("clips")) if isinstance(c, dict)], {"clips": _lst(f.get("clips"))})
+    u["cognition"] = normalize_cognition(u.get("cognition"))
+    u["judgment"] = normalize_judgment(u.get("judgment"), _dct(u.get("judgment")).get("benchmark"))
+    if not u.get("one_liner"):
+        u["one_liner"] = u["cognition"]["positioning"].get("one_liner") or (u["fact"].get("overview") or "")[:120]
+    return u
 
 
 def understanding_summary(u):
     if not u:
         return ""
-    lines = [u.get("one_liner") or "", "方法论：%s" % (u.get("methodology_name") or "EFD-7")]
-    for ly in u.get("layers") or []:
-        if not ly.get("name"):
-            continue
-        bits = ["%s %s" % (ly.get("id") or "", ly["name"])]
-        if ly.get("verdict"):
-            bits.append("判定=%s" % ly["verdict"])
-        if ly.get("score") is not None:
-            bits.append("分=%s/5" % ly["score"])
-        if ly.get("evidence"):
-            bits.append("证据：" + "；".join(ly["evidence"][:3]))
-        if ly.get("improve"):
-            bits.append("改进：" + ly["improve"])
-        lines.append(" · ".join(bits))
-    brief = ((u.get("replication_brief") or {}).get("iteration_prompt") or "").strip()
-    if brief:
-        lines.append("迭代提示词：" + brief[:400])
-    return "\n".join(x for x in lines if x)
+    f, g = _dct(u.get("fact")), _dct(u.get("cognition"))
+    lines = ["总述：" + (f.get("overview") or u.get("one_liner") or "")]
+    if f.get("products"):
+        lines.append("商品：" + "；".join("%s %s %s" % (p.get("id") or "", p.get("name") or "", p.get("look") or "")
+                                        for p in f["products"] if isinstance(p, dict)))
+    pl = _dct(f.get("people")).get("list") or []
+    if pl:
+        lines.append("人物：" + "；".join("%s %s %s %s" % (p.get("id") or "", p.get("gender") or "", p.get("age") or "", p.get("wardrobe") or "")
+                                        for p in pl if isinstance(p, dict)))
+    if f.get("scenes"):
+        lines.append("场景：" + "；".join("%s %s" % (x.get("id") or "", x.get("name") or "") for x in f["scenes"] if isinstance(x, dict)))
+    fm = _dct(f.get("format"))
+    lines.append("形式：%s · %s 个分镜 · %s" % (fm.get("style") or "", fm.get("clip_count") or 0, fm.get("aspect") or ""))
+    if f.get("keywords"):
+        lines.append("关键词：" + "、".join(str(x) for x in f["keywords"][:12]))
+    ca, sp = _dct(g.get("core_attraction")), _dct(g.get("selling_points"))
+    if ca:
+        lines.append("核心吸引力：%s %s" % (ca.get("type") or "", ca.get("description") or ""))
+    if sp.get("primary"):
+        lines.append("主卖点：%s（%s）" % (sp["primary"].get("point") or "", sp["primary"].get("expression") or ""))
+    if g.get("tags"):
+        lines.append("认知标签：" + "、".join("%s:%s" % (t.get("category"), t.get("value")) for t in g["tags"] if isinstance(t, dict)))
+    return "\n".join(x for x in lines if x and not x.endswith("："))
 
 
-def normalize_understanding(raw_u, media_type):
-    u = dict(raw_u or {}) if isinstance(raw_u, dict) else {}
-    u.setdefault("methodology", "EFD-7")
-    u.setdefault("methodology_name", "效果漏斗拆解法 EFD-7")
-    u["media_type"] = media_type
-    by_id = {x.get("id"): x for x in (u.get("layers") or []) if isinstance(x, dict)}
-    layers = []
-    for shell in efd_layer_shell():
-        hit = by_id.get(shell["id"]) or {}
-        row = dict(shell)
-        row.update({k: hit[k] for k in ("score", "verdict", "evidence", "why_it_matters", "improve", "metric_proxy") if k in hit})
-        if isinstance(row.get("evidence"), str):
-            row["evidence"] = [row["evidence"]]
-        row["evidence"] = list(row.get("evidence") or [])[:6]
-        layers.append(row)
-    u["layers"] = layers
-    u.setdefault("beats", [])
-    u.setdefault("craft", {})
-    u.setdefault("script", {})
-    u.setdefault("replication_brief", {})
-    u.setdefault("one_liner", "")
-    u.setdefault("product_on_screen", "")
-    if not u.get("summary_markdown"):
-        u["summary_markdown"] = understanding_summary(u)
-    return u
-
-
-def offline_understanding(asset, values):
-    mtype = asset.get("media_type") or "image"
-    spu = ""
-    for v in (values or {}).values():
-        if isinstance(v, dict) and v.get("spu"):
-            spu = v["spu"]
-            break
-    layers = efd_layer_shell()
-    for ly in layers:
-        ly["verdict"] = "unknown"
-        ly["score"] = 3
-        ly["evidence"] = ["未配置 AI Key，无法从画面验真；仅保留漏斗骨架供人工补全"]
-        ly["improve"] = "配置 AI Key 后重新识别，将补齐证据与判定"
-    return normalize_understanding({
-        "one_liner": "未配置 AI：已按文件类型/文件名预填命名字段，内容理解待 AI 补全。",
-        "product_on_screen": spu or "未知",
-        "layers": layers,
-        "beats": [{"t": "全文", "name": "未分析", "visual": "需 AI", "audio": "需 AI", "intent": "需 AI"}] if mtype == "video" else [],
-        "craft": {"lighting": "", "camera": "", "composition": "", "transitions": "", "pacing": ""},
-        "script": {"spoken": "", "on_screen_text": "", "cta": ""},
-        "replication_brief": {
-            "must_keep": [], "variables_to_test": ["钩子前3秒", "证明方式", "CTA 措辞"],
-            "iteration_prompt": "（配置 AI 后生成）在保持卖点清晰的前提下，强化前3秒钩子与证据 denseness，输出可拍摄的分镜 brief。",
-        },
-    }, mtype)
-
-
-def understand_prompt(asset, media_desc):
+def fact_prompt(asset, clips, source, duration, asr):
     is_video = asset.get("media_type") in ("video", "gif")
-    return """你是广告效果导演 + 心理学顾问 + 编剧/摄影指导。请严格按「效果漏斗拆解法 EFD-7」拆解素材（见仓库 methodology-efd7.md）。
+    clip_lines = "\n".join("   %s  %s–%s%s" % (c["id"], fmt_s(c["start"]), fmt_s(c["end"]), "（同镜头延续）" if c.get("cont") else "")
+                           for c in clips)
+    asr_txt = ""
+    if asr:
+        asr_txt = "\n【语音转写（带时间戳，台词以此为准，按时间归入对应分镜）】\n" + "\n".join(
+            "%s–%s %s" % (fmt_s(x["start"]), fmt_s(x["end"]), x["text"]) for x in asr["segments"][:80])
+    elif is_video:
+        asr_txt = "\n【无语音转写】台词只能依据画面字幕与口型推断；无法确认的口播写「未转写」。"
+    return """你是资深广告片导演兼场记（script supervisor）。现在只做【事实层】拆解：像开机前给剧组各部门出拍摄通告和分镜表那样，把素材里看得见、听得到的内容完整记录下来。
 
-素材类型：%s；文件名：%s
-下方按时间顺序给出关键画面（视频为抽帧）。
+素材：%s；文件名：%s；时长：%s；分镜来源：%s
+%s
+铁律：
+1. 只陈述事实，不评价、不分析效果、不给建议、不出现「吸引人/高级/有效」等判断词；看不清写「不可辨」，禁止臆测品牌名或价格。
+2. 不缺失、不遗漏、不重复：所有出镜商品编号 G1…、人物 P1…、场景 S1…，分镜里用编号引用；同一对象只登记一次。
+3. 分镜已由系统按画面突变切好，下列 id 与时间段必须原样使用，不得增删合并：
+%s
+4. 每个分镜都写全：景别、机位角度、运镜、焦段（推断）、灯光（光位/光质/色温/明暗变化）、构图与景深、主体与动作细节（起势→过程→落点）、出镜商品及展示部位、人物、场景、台词/口播原文、屏幕字幕原文、特效/贴纸/包装、入点转场、色调。
+5. %s
+6. departments 以电影剧组岗位视角，列出复刻这条素材时各岗位需要准备的事实清单（每岗 2–6 条，具体到物件/参数/动作/时长）。岗位键：director 导演/编剧、dop 摄影指导、gaffer 灯光、art 美术/道具、wardrobe_makeup 服装/化妆、cast 演员/调度、editor_vfx 剪辑/包装、sound 录音/音乐。
 
-【硬约束——可被人验收】
-1. 按影响力 L1→L7 输出；若 L1 或 L2 为 fail，必须在 summary 与 L7 的 iteration_prompt 中写明「先修上层，下层视听精修边际收益低」。
-2. 每层 evidence 必须可指认：时间点/字幕原文/景别或主体变化/口播句；禁止「氛围好」「很高级」等无证据空话。
-3. score∈1–5；verdict∈pass|weak|fail；metric_proxy 写投放代理指标（钩子率/hold/CTR 等）。
-4. 融合但不堆砌：Motion 停滑逻辑 + PAS/AIDA 说服序 + 7-Beat 节拍 + 灯光/构图/运镜/转场（L5 只服务说服）。
-5. L3 对照 PAS 与 7-Beat，点名缺失节拍。L4 点名证据类型（演示/对比/特写/口碑/数据）。
-6. L7：must_keep≥2；variables_to_test≥2；iteration_prompt 中文 150–400 字，可直接当拍摄/生成 brief（含秒数建议、画面、字幕、口播、禁改项）。
-
-【层】L1注意力捕获｜L2对象认同｜L3叙事说服结构｜L4信任与证据｜L5视听语言｜L6信息与台词｜L7可复刻变量
-
-%s只输出 JSON：
+只输出 JSON：
 {
- "one_liner": "一句话：卖什么、怎么卖、核心钩子",
- "product_on_screen": "画面商品描述",
- "layers": [
-   {"id":"L1","name":"注意力捕获","score":0,"verdict":"pass|weak|fail","metric_proxy":"","evidence":["..."],"why_it_matters":"","improve":""}
- ],
- "beats": [{"t":"0-3s","name":"Opening","visual":"","audio":"","intent":""}],
- "craft": {"lighting":"","camera":"","composition":"","transitions":"","pacing":""},
- "script": {"spoken":"","on_screen_text":"","cta":""},
- "replication_brief": {"must_keep":["..."],"variables_to_test":["..."],"iteration_prompt":"..."},
- "summary_markdown": "设计师可读完整摘要：漏斗结论+七层要点+复刻建议"
+ "overview": "总述（编导口吻 3–5 句纯事实：什么形式、谁、在哪、做了什么、展示了什么商品、如何收尾）",
+ "format": {"aspect": "9:16/1:1/4:5/16:9", "duration_s": 0, "style": "实拍剧情/UGC口播/产品展示/混剪/图文/动画", "sound": "口播/音乐/音效/无声"},
+ "products": [{"id": "G1", "name": "", "look": "颜色/款式/材质/可见细节", "shown": "展示方式与部位", "clips": ["C01"], "first_seen_s": 0}],
+ "people": {"count": 0, "list": [{"id": "P1", "gender": "", "age": "", "look": "体型/发型/妆容/肤色", "wardrobe": "", "role": "模特/口播者/路人/手部", "clips": ["C01"]}]},
+ "scenes": [{"id": "S1", "name": "", "type": "内景/外景/棚拍", "time": "白天/夜晚/不可辨", "props": [""], "clips": ["C01"]}],
+ "audio": {"voiceover": "口播者/语种/语气", "music": "风格/节奏/情绪", "sfx": ""},
+ "script": [{"clip": "C01", "t": "0.0–2.3s", "type": "口播/字幕/画外音", "text": "原文"}],
+ "text_fx": [{"clip": "C01", "text": "原文", "style": "位置/字体/颜色/描边/动效"}],
+ "keywords": ["画面与台词中出现的关键词"],
+ "tags": [{"category": "商品/人物/场景/景别/运镜/灯光/色调/字幕/音频/形式", "value": ""}],
+ "departments": {"director": [""], "dop": [""], "gaffer": [""], "art": [""], "wardrobe_makeup": [""], "cast": [""], "editor_vfx": [""], "sound": [""]},
+ "clips": [{"id": "C01", "shot_size": "大特写/特写/近景/中景/中全景/全景/远景", "angle": "平视/俯拍/仰拍/顶拍/POV/过肩", "movement": "固定/推/拉/摇/移/跟/升降/手持/环绕", "lens": "广角/标准/长焦/微距", "lighting": "", "composition": "", "subject": "", "action": "", "products": ["G1"], "product_detail": "", "people": ["P1"], "scene": "S1", "dialogue": "", "subtitle": "", "effects": "", "transition_in": "开场/硬切/叠化/甩镜/匹配剪辑/跳切/同镜头延续", "color": ""}]
 }""" % (
-        media_desc, asset.get("filename") or "",
-        "图片/静帧：beats 写 1–2 个信息层级（主视觉→卖点字→CTA）；L1–L7 仍须完整。\n" if not is_video
-        else "视频：beats 覆盖实际出现的 Opening/Context/Tension/Delivery/Validation/Shift/Close；"
-             "craft 写清主光、景别序列、运镜意图、转场类型、剪辑节奏（前紧后证与否）。\n")
+        "视频" if is_video else "图片", asset.get("filename") or "", fmt_s(duration) if duration else "-",
+        "画面突变自动切镜" if source == "auto_cut" else "均匀抽帧", asr_txt, clip_lines,
+        "视频：按时间顺序逐镜描述，镜头之间的连续动作要写清承接关系。" if is_video
+        else "图片：只有 1 个分镜 C01，把画面按视觉层级（主体→商品→文字→背景）写全，运镜写「静帧」。")
+
+
+def cognition_prompt(asset, fact):
+    return """你是 Meta 效果广告创意策略总监（熟悉消费心理学与广告学）。下面是一条素材的【事实层】拆解与关键帧。请做【认知层】分析：把事实提炼为「这条广告物料在用什么机制影响用户」。
+
+铁律：
+1. 只做客观认知与归类，不评价好坏、不打分、不给改进建议。
+2. 每个结论都要能回指事实：用分镜 id（C01…）或对象编号（G1/P1/S1）作为依据。
+3. 卖点 ≠ 买点：卖点 = 商品能提供什么（用 FAB：特征→优势→利益）；买点 = 用户为什么想买（动机、情绪、场景任务 JTBD）。
+4. 方法论（按需使用，不要堆名词）：%s。
+
+【事实层】
+%s
+
+只输出 JSON：
+{
+ "positioning": {"category": "品类", "product_role": "商品在片中的角色", "one_liner": "一句话：用什么方式、向谁、卖什么"},
+ "core_attraction": {"type": "视觉奇观/痛点共鸣/反差冲突/利益承诺/好奇缺口/社会证明/人物魅力/价格刺激", "description": "", "clips": ["C01"]},
+ "selling_points": {"primary": {"point": "", "fab": "特征→优势→利益", "expression": "演示/对比/特写/口播/字幕/场景", "clips": []}, "secondary": [{"point": "", "fab": "", "expression": "", "clips": []}]},
+ "buying_points": {"jtbd": "用户想完成的任务", "motives": [{"type": "马斯洛层级或动机类型", "desc": ""}], "emotions": [{"emotion": "Plutchik 情绪", "intensity": 1, "clips": []}], "emotional_arc": "情绪随时间的走向", "atmosphere": "整体氛围"},
+ "audience": {"persona": "画像", "awareness": "Schwartz 阶段：无意识/问题意识/方案意识/产品意识/最知晓", "sophistication": "市场成熟度判断依据", "scenario": "使用场景"},
+ "persuasion": {"structure": "PAS/AIDA/BAB/问题-演示-结果/清单式/故事式", "route": "ELM 中心路径/边缘路径/混合", "principles": [{"name": "Cialdini 原则", "evidence": "", "clips": []}], "proof_types": ["演示/对比/数据/口碑/权威/质感"]},
+ "abcd": {"attention": "", "branding": "品牌/商品何时、以何种方式出现", "connection": "", "direction": "行动指令"},
+ "fogg": {"motivation": "", "ability": "降低行动门槛的信息", "prompt": "触发点"},
+ "meta_fit": {"first_3s": "", "sound_off": "无声状态下信息是否可读（陈述事实）", "vertical": "", "native_feel": "原生内容感 vs 广告感"},
+ "clip_roles": [{"clip": "C01", "role": "%s 之一", "function": "这个分镜在广告里承担什么", "mechanism": "起作用的心理机制", "reuse": "混剪可复用位置：开头钩子/中段证明/结尾转化/过渡"}],
+ "tags": [{"category": "钩子类型/卖点/买点/情绪/说服结构/认知阶段/受众/形式", "value": ""}]
+}
+clip_roles 必须覆盖每一个分镜。""" % ("；".join(COG_FRAMEWORKS), slim_json(fact), CLIP_ROLES)
+
+
+def judgment_prompt(fact, cog, bench, values_desc):
+    if bench:
+        mt = "\n".join("- %s=%s：%d 条素材，消耗 %.0f，ROAS %.2f（较均值 %+.0f%%）" % (
+            m["dim"], m["label"], m["assets"], m["spend"], m["roas"], m["lift"] * 100) for m in bench["matches"]) or "- 无同标签历史"
+        refs = "；".join("%s ROAS %.2f 消耗 %.0f" % (r["short_name"], r["roas"], r["spend"]) for r in bench["refs"]) or "无"
+        btxt = """本账户已回流 %d 条有消耗素材；整体 ROAS %.2f；单素材消耗中位 %.0f / P90 %.0f。
+与本素材标签相同的历史表现：
+%s
+统计先验：ROAS≈%.2f；消耗档位 %s（按同标签单素材消耗推算）。
+高 ROAS 参照素材：%s""" % (bench["sample_assets"], bench["avg_roas"], bench["spend_p50"], bench["spend_p90"], mt,
+                          bench["est_roas"], bench["est_tier"], refs)
+    else:
+        btxt = "无历史投放数据：仅能依据创意规律判断，confidence 不得高于 0.5，benchmark 字段写「创意规律」。"
+    return """你是 Meta 投放效果分析师 + 广告导演。基于【事实层】【认知层】和【历史投放基准】，对这条素材做【判断层】：预估效果、给出细到分镜的理由，并给出「微调」方案（不是重做）。
+
+【历史投放基准】
+%s
+
+【命名标签】%s
+
+【事实层】
+%s
+
+【认知层】
+%s
+
+要求：
+1. prediction：spend_tier ∈ S(可放量主力)/A(稳定消耗)/B(小量消耗)/C(难起量)；roas_low/roas_high 为区间；vs_baseline ∈ 高于/持平/低于 账户均值；confidence 0–1；summary 2–3 句。以统计先验为锚，创意因素只能做有理由的上下修正，且每个修正都要能在 positives/negatives 中找到对应条目。
+2. funnel：按 EFD-7 漏斗逐层 L1注意力捕获 / L2对象认同 / L3叙事说服结构 / L4信任与证据 / L5视听语言 / L6信息与台词 / L7可复刻变量，给 score 1–5、verdict pass/weak/fail、reason（引用分镜 id）。
+3. positives / negatives：每条 factor、clips（分镜 id）、evidence（引用事实层原文）、benchmark（对应的历史数据；没有就写「创意规律」）、impact 高/中/低。要细到用户能直接定位到哪一镜、哪一句、哪个画面元素。
+4. edits：最多 5 条微调，按收益排序；总改动不超过全片 30%%，保留原片人物、商品、场景、调性。每条：
+   priority、clip（分镜 id）、target（秒数区间）、type（分镜替换/台词/字幕/场景/节奏/音乐/CTA/调色）、current（原内容，引自事实层）、change（改成什么：具体到字幕原文、台词原句、动作、景别、时长）、reason、expected（影响哪个指标及方向）、
+   prompt（中文视频生成提示词）、prompt_en（同内容英文版）。
+   提示词规范：必须继承事实层中该分镜及前后分镜的人物外观/服装/妆发、商品外观、场景与道具、灯光、色调、画幅、时长，保证与相邻分镜无缝衔接；结构依次为：主体与外观｜动作（起势→过程→落点）｜场景与道具｜镜头（景别/角度/运镜/焦段）｜灯光与色调｜时长与画幅｜风格质感｜负面约束（无文字水印、肢体手指不变形、商品外观与 logo 不改变）。台词/字幕类修改，prompt 写成字幕或口播的替换文本与出现时机。
+5. keep：必须保留不动的分镜与要素。
+
+只输出 JSON：
+{
+ "prediction": {"spend_tier": "A", "roas_low": 0, "roas_high": 0, "vs_baseline": "", "confidence": 0.0, "summary": ""},
+ "funnel": [{"id": "L1", "score": 3, "verdict": "pass", "reason": "", "clips": ["C01"]}],
+ "positives": [{"factor": "", "clips": [], "evidence": "", "benchmark": "", "impact": "高"}],
+ "negatives": [{"factor": "", "clips": [], "evidence": "", "benchmark": "", "impact": "中"}],
+ "edits": [{"priority": 1, "clip": "C01", "target": "0.0–2.3s", "type": "", "current": "", "change": "", "reason": "", "expected": "", "prompt": "", "prompt_en": ""}],
+ "keep": [""]
+}""" % (btxt, values_desc or "-", slim_json(fact, 12000), slim_json(cog, 8000))
 
 
 def naming_prompt(fields, products, understanding):
     plist = "\n".join("%d | %s | %s" % (p["id"], p["spu"] or "-", p["title"] or "") for p in products[:400])
-    u_brief = understanding_summary(understanding)[:1800]
-    return """你是跨境电商广告素材命名专家。请基于「已完成的内容理解」和命名知识库，输出命名字段与补充标签。
+    u_brief = understanding_summary(understanding)[:2400]
+    return """你是跨境电商广告素材命名专家。请基于「已完成的内容理解（事实层+认知层）」和命名知识库，输出命名字段与补充标签。
 
-【内容理解摘要（EFD-7）】
+【内容理解摘要】
 %s
 
 【命名规范字典】优先选已有可选值（输出英文 value）；没有贴切值时可 is_new=true（英文 PascalCase，无空格下划线）。
@@ -941,7 +1166,80 @@ def naming_prompt(fields, products, understanding):
 }""" % (u_brief or "（理解稿为空）", spec_prompt(fields), plist or "（商品库为空）")
 
 
-def analyze_asset(c, aid, frames):
+def history_benchmark(c, values, ai_tags):
+    try:
+        an = analytics(c, {})
+    except Exception:
+        return None
+    assets = [a for a in an.get("assets") or [] if (a.get("spend") or 0) > 0]
+    avg = (an.get("summary") or {}).get("roas")
+    if not assets or not avg:
+        return None
+    sp = sorted(a["spend"] for a in assets)
+
+    def pct(p):
+        return sp[min(len(sp) - 1, int(len(sp) * p))]
+
+    dims = {d["key"]: d for d in an.get("dims") or []}
+    hits = []
+
+    def add(dkey, label):
+        d = dims.get(dkey)
+        v = d and next((x for x in d["values"] if x["label"] == label), None)
+        if v and v.get("spend") and v.get("roas") is not None:
+            hits.append({"dim": d["name"], "label": label, "assets": v["assets"], "spend": round(v["spend"], 2),
+                         "roas": round(v["roas"], 2), "lift": round(v["roas"] / avg - 1, 3),
+                         "spend_per_asset": round(v["spend"] / max(1, v["assets"]), 2)})
+
+    for f in load_fields(c):
+        if f["type"] in ("enum", "product") and f["key"] not in ADVICE_SKIP:
+            lab = value_label(f, (values or {}).get(f["key"]))
+            if lab:
+                add(f["key"], lab)
+    for t in ai_tags or []:
+        if t.get("enabled", True) and t.get("cn"):
+            lab = t["cn"] if not t.get("en") or t["cn"] == t["en"] else "%s (%s)" % (t["cn"], t["en"])
+            add("ai:" + (t.get("category") or "其他"), lab)
+    # 按样本量收缩的对数 lift 加权：样本少的标签权重低，整体再向均值收缩 40%
+    w = [(min(1.0, h["assets"] / 5.0), math.log(max(h["roas"], 0.01) / avg)) for h in hits]
+    tw = sum(x for x, _ in w)
+    est = avg * math.exp(0.6 * sum(x * y for x, y in w) / tw) if tw else avg
+    spa = [h["spend_per_asset"] for h in hits if h["assets"] >= 2]
+    est_sp = sum(spa) / len(spa) if spa else pct(0.5)
+    tier = "S" if est_sp >= pct(0.9) else "A" if est_sp >= pct(0.7) else "B" if est_sp >= pct(0.4) else "C"
+    refs = sorted([a for a in assets if a["spend"] >= pct(0.5) and a.get("roas") is not None], key=lambda a: -a["roas"])[:3]
+    return {"sample_assets": len(assets), "avg_roas": round(avg, 2), "spend_p50": round(pct(0.5), 2), "spend_p90": round(pct(0.9), 2),
+            "matches": sorted(hits, key=lambda h: -abs(h["lift"]))[:12], "est_roas": round(est, 2), "est_spend": round(est_sp, 2),
+            "est_tier": tier, "refs": [{"short_name": a["short_name"], "roas": round(a["roas"], 2), "spend": round(a["spend"], 2)} for a in refs]}
+
+
+def offline_understanding(asset, clips, meta, bench):
+    fact = normalize_fact({"overview": "未配置 AI Key：已完成自动切镜（%d 个分镜），画面内容待 AI 补全。" % len(clips),
+                           "format": {"duration_s": (meta or {}).get("duration")}}, clips, meta)
+    j = {"prediction": {"summary": "未配置 AI，仅给出历史统计先验。" if bench else "未配置 AI 且无历史数据，无法判断。"}}
+    if bench:
+        j["prediction"].update(spend_tier=bench["est_tier"], roas_low=round(bench["est_roas"] * 0.85, 2),
+                               roas_high=round(bench["est_roas"] * 1.15, 2), confidence=0.3,
+                               vs_baseline="高于" if bench["est_roas"] > bench["avg_roas"] * 1.05 else
+                               "低于" if bench["est_roas"] < bench["avg_roas"] * 0.95 else "持平")
+    return {"version": "fcj-1", "media_type": asset.get("media_type") or "image", "duration": (meta or {}).get("duration"),
+            "clips_source": "auto_cut", "one_liner": fact["overview"], "fact": fact,
+            "cognition": normalize_cognition({}), "judgment": normalize_judgment(j, bench)}
+
+
+def values_brief(fields, values, ai_tags):
+    out = []
+    for f in fields:
+        lab = value_label(f, (values or {}).get(f["key"])) if f["type"] in ("enum", "product", "text") else None
+        if lab:
+            out.append("%s=%s" % (f["name_cn"], lab))
+    tg = [t.get("cn") for t in ai_tags or [] if t.get("enabled", True) and t.get("cn")]
+    if tg:
+        out.append("AI标签=" + "、".join(tg))
+    return "；".join(out)
+
+
+def analyze_asset(c, aid, frames, meta=None):
     s = get_settings(c)
     fields = load_fields(c)
     asset = get_asset(c, aid)
@@ -953,7 +1251,10 @@ def analyze_asset(c, aid, frames):
     ai_tags = []
     description = ""
     understanding = None
-    raw = {"pipeline": "efd7-v1"}
+    meta = meta or {}
+    frames = frames[:40]
+    clips, clip_src = norm_clips(meta, len(frames))
+    raw = {"pipeline": "fcj-v1"}
     mode = "ai"
 
     if not s.get("ai_api_key"):
@@ -965,26 +1266,44 @@ def analyze_asset(c, aid, frames):
                     if (v["en"] and len(v["en"]) > 2 and v["en"].lower() in low) or (v["cn"] and v["cn"] in asset["filename"]):
                         values[f["key"]] = enum_value(v, "filename", 0.6, "文件名包含该词")
                         break
-        understanding = offline_understanding(asset, values)
-        description = understanding.get("one_liner") or "未配置 AI Key：已预填命名字段"
+        understanding = offline_understanding(asset, clips, meta, history_benchmark(c, values, []))
+        description = understanding["one_liner"]
         raw["understanding"] = understanding
     else:
-        media_desc = {"image": "图片", "video": "视频（以下为按时间顺序抽取的关键帧）", "gif": "GIF 动图"}[asset["media_type"]]
-        frames_parts = [img_part(f, "low" if len(frames) > 2 else "high") for f in frames[:8]]
-        # 第一份：内容理解（EFD-7）
-        u_content = [{"type": "text", "text": understand_prompt(asset, media_desc)}] + frames_parts
-        u_raw = ai_chat(s, [
-            {"role": "system", "content": "You are an advertising-effectiveness director. Apply EFD-7 rigorously. Reply with JSON only."},
-            {"role": "user", "content": u_content}])
-        understanding = normalize_understanding(u_raw, asset["media_type"])
-        raw["understanding"] = understanding
-        # 第二份：基于理解的命名
-        n_content = [{"type": "text", "text": naming_prompt(fields, products, understanding)}] + frames_parts[:4]
+        detail = "high" if len(frames) <= 2 else "low"
+        clip_parts = clip_frame_parts(frames, clips, detail)
+        asr = None
+        if asset["media_type"] == "video":
+            try:
+                asr = transcribe(s, asset.get("file_path"))
+            except Exception as e:
+                raw["asr_error"] = str(e)[:300]
+        # 事实层
+        fact_raw = ai_chat(s, [
+            {"role": "system", "content": "You are a meticulous film director and script supervisor. Record facts only. Reply with JSON only."},
+            {"role": "user", "content": [{"type": "text", "text": fact_prompt(asset, clips, clip_src, meta.get("duration"), asr)}] + clip_parts}])
+        fact = normalize_fact(fact_raw, clips, meta)
+        if asr:
+            fact["asr"] = asr
+        understanding = {"version": "fcj-1", "media_type": asset["media_type"], "duration": meta.get("duration"),
+                         "clips_source": clip_src, "fact": fact}
+        # 认知层
+        try:
+            sample = clip_parts if len(clip_parts) <= 24 else clip_parts[:24]
+            cog_raw = ai_chat(s, [
+                {"role": "system", "content": "You are a performance-advertising creative strategist grounded in consumer psychology. Objective analysis only. JSON only."},
+                {"role": "user", "content": [{"type": "text", "text": cognition_prompt(asset, fact)}] + sample}])
+        except Exception as e:
+            cog_raw, raw["cognition_error"] = {}, str(e)[:300]
+        understanding["cognition"] = normalize_cognition(cog_raw)
+        understanding["one_liner"] = understanding["cognition"]["positioning"].get("one_liner") or fact.get("overview", "")[:120]
+        # 命名
+        n_content = [{"type": "text", "text": naming_prompt(fields, products, understanding)}] + clip_parts[:8]
         naming = ai_chat(s, [
             {"role": "system", "content": "You name ad creatives from an existing understanding brief and a controlled taxonomy. JSON only."},
             {"role": "user", "content": n_content}])
         raw["naming"] = naming
-        description = naming.get("description") or understanding.get("one_liner") or ""
+        description = naming.get("description") or understanding["one_liner"]
 
         cands = []
         for cd in naming.get("product_candidates") or []:
@@ -1017,7 +1336,8 @@ def analyze_asset(c, aid, frames):
             pf = next((f for f in fields if f["type"] == "product"), None)
             if pf:
                 values[pf["key"]] = {"product_id": product["id"], "spu": product["spu"], "title": product["title"],
-                                     "source": "ai", "reason": product_reason or (understanding.get("product_on_screen") or "")}
+                                     "source": "ai", "reason": product_reason or "；".join(
+                                         "%s %s" % (p.get("name") or "", p.get("look") or "") for p in fact["products"][:2] if isinstance(p, dict))}
 
         w = code_width(s)
         for f in fields:
@@ -1045,6 +1365,17 @@ def analyze_asset(c, aid, frames):
             if isinstance(t, dict) and (t.get("cn") or t.get("en")):
                 ai_tags.append({"category": t.get("category") or "其他", "cn": t.get("cn") or t.get("en"),
                                 "en": clean_seg(t.get("en") or t.get("cn"), s.get("separator")), "enabled": i < mx})
+        # 判断层：在命名标签确定后，用同标签历史表现作为统计先验
+        bench = history_benchmark(c, values, ai_tags)
+        try:
+            j_raw = ai_chat(s, [
+                {"role": "system", "content": "You are a Meta performance analyst and commercial director. Ground every claim in the given facts and benchmark. JSON only."},
+                {"role": "user", "content": [{"type": "text", "text": judgment_prompt(
+                    fact, understanding["cognition"], bench, values_brief(fields, values, ai_tags))}] + clip_parts[:16]}])
+        except Exception as e:
+            j_raw, raw["judgment_error"] = {}, str(e)[:300]
+        understanding["judgment"] = normalize_judgment(j_raw, bench)
+        raw["understanding"] = understanding
 
     vkey = next((f["key"] for f in fields if f["type"] == "version"), None)
     if vkey:
@@ -2994,7 +3325,7 @@ def r_analyze(h, c, q, aid):
     if b.get("thumb"):
         c.execute("UPDATE assets SET thumb=? WHERE id=?", (b["thumb"], aid))
         c.commit()
-    return analyze_asset(c, int(aid), b.get("frames") or [])
+    return analyze_asset(c, int(aid), b.get("frames") or [], {"clips": b.get("clips") or [], "duration": b.get("duration")})
 
 
 def r_preview(h, c, q):

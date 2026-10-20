@@ -127,41 +127,143 @@ function demoAiTags() {
   }
   return picked;
 }
-function demoUnderstanding(media_type, filename, values) {
-  const spu = Object.values(values || {}).find((v) => v && v.spu)?.spu || '商品';
-  const isVid = media_type === 'video' || media_type === 'gif';
-  const layers = [
-    ['L1', '注意力捕获', '钩子率', 4, 'pass', ['开场出现强对比或痛点提问字幕', '首帧商品/人物清晰入画'], '停滑决定一切曝光机会', '强化前 1.5s 的视觉打断与「你是不是…」句式'],
-    ['L2', '对象认同', '前段留存', 4, 'pass', ['场景/模特年龄感贴近目标人群', `卖点围绕 ${spu} 的使用情境`], '不对盘的人留下也会浪费点击', '在钩子中点名具体人群情境（通勤/健身/职场）'],
-    ['L3', '叙事说服结构', 'hold', 3, 'weak', ['有问题→展示→结果的雏形', '中段证明略短'], '结构决定是否看完并被说服', '补齐 Tension→Validation 两拍，避免过早硬推'],
-    ['L4', '信任与证据', '停留', 3, 'weak', ['有面料/穿着特写', '缺少前后对比或数据'], '不信就不会点', '加入 Before/After 或实测细节特写 2–3 秒'],
-    ['L5', '视听语言', '掉点', 4, 'pass', ['景别从全身切到特写', '主光干净、背景不抢戏'], '工艺服务说服，不服务炫技', '转场用动作匹配，避免无意义闪切'],
-    ['L6', '信息与台词', 'CTR', 3, 'weak', ['有字幕卖点', 'CTA 出现偏晚或较弱'], '说不清下一步就流失', '在后 20% 明确「点击查看同款/优惠」'],
-    ['L7', '可复刻变量', '对照实验', 4, 'pass', ['钩子句式与证明方式可拆成变量'], '可复刻才能规模化迭代', '见 iteration_prompt'],
-  ].map(([id, name, metric, score, verdict, evidence, why, improve], i) => ({
-    id, name, impact: 7 - i, score, verdict, metric_proxy: metric, evidence, why_it_matters: why, improve,
-  }));
-  const iteration = `复刻一条「痛点钩子 + 单品特写证明」片：保持商品为 ${spu}、表达方式偏实拍、主卖点不变。变量：①开场 0–2s 换成痛点提问字幕；②3–8s 加入面料/弹力特写作证据；③结尾 CTA 改为「点进商详看同款」。禁止改品牌调性与虚假对比。输出分镜表（秒数/画面/字幕/口播）。`;
+function demoBench(an, values) {
+  if (!an || !an.summary || !an.summary.roas) return null;
+  const avg = an.summary.roas;
+  const assets = (an.assets || []).filter((a) => a.spend > 0);
+  const sp = assets.map((a) => a.spend).sort((a, b) => a - b);
+  const pct = (p) => sp[Math.min(sp.length - 1, Math.floor(sp.length * p))] || 0;
+  const matches = [];
+  for (const d of an.dims || []) {
+    const v = values[d.key];
+    if (!v || ['date', 'version', 'designer'].includes(d.key)) continue;
+    const want = [v.spu, v.cn, v.en].filter(Boolean);
+    const hit = (d.values || []).find((x) => want.some((w) => String(x.label).includes(w)));
+    if (hit && hit.spend && hit.roas != null) {
+      matches.push({ dim: d.name, label: hit.label, assets: hit.assets, spend: hit.spend, roas: hit.roas, lift: hit.roas / avg - 1, spa: hit.spend / Math.max(1, hit.assets) });
+    }
+  }
+  const w = matches.map((m) => [Math.min(1, m.assets / 5), Math.log(Math.max(m.roas, 0.01) / avg)]);
+  const tw = w.reduce((s, x) => s + x[0], 0);
+  const est = tw ? avg * Math.exp(0.6 * w.reduce((s, x) => s + x[0] * x[1], 0) / tw) : avg;
+  const spa = matches.filter((m) => m.assets >= 2).map((m) => m.spa);
+  const estSp = spa.length ? spa.reduce((a, b) => a + b, 0) / spa.length : pct(0.5);
+  const tier = estSp >= pct(0.9) ? 'S' : estSp >= pct(0.7) ? 'A' : estSp >= pct(0.4) ? 'B' : 'C';
+  const refs = assets.filter((a) => a.spend >= pct(0.5) && a.roas != null).sort((a, b) => b.roas - a.roas).slice(0, 3);
   return {
-    methodology: 'EFD-7', methodology_name: '效果漏斗拆解法 EFD-7', media_type,
-    one_liner: `演示理解：以 ${spu} 为核心的效果向广告拆解（EFD-7），先验钩子与认同，再看结构与证据。`,
-    product_on_screen: spu,
-    layers,
-    beats: isVid ? [
-      { t: '0-3s', name: 'Opening', visual: '钩子画面/字幕抢注意力', audio: '可选口播提问', intent: '停滑+建立议题' },
-      { t: '3-10s', name: 'Tension/Delivery', visual: '痛点或场景 → 产品入画', audio: '卖点口播', intent: '制造缺口并给出方案' },
-      { t: '10-20s', name: 'Validation', visual: '特写/对比证明', audio: '证据句', intent: '建立信任' },
-      { t: '末段', name: 'Close', visual: '商品+CTA', audio: '行动指令', intent: '促成点击' },
-    ] : [{ t: '静帧', name: 'Primary', visual: '主视觉层级：人物/产品→卖点字', audio: '-', intent: '停滑并传达核心利益' }],
-    craft: { lighting: '主光柔、轮廓分离主体', camera: '中近景→特写', composition: '产品占视觉重心', transitions: isVid ? '动作匹配切' : '—', pacing: isVid ? '前紧后证' : '一眼读懂' },
-    script: { spoken: isVid ? '（演示）你是不是也…？试试这件…' : '', on_screen_text: '痛点/卖点字幕', cta: '点击查看同款' },
-    replication_brief: {
-      must_keep: [`商品识别为 ${spu}`, '卖点表达清晰', '前3秒议题明确'],
-      variables_to_test: ['钩子句式', '证据形式（特写/对比/口碑）', 'CTA 措辞与出现时机'],
-      iteration_prompt: iteration,
-    },
-    summary_markdown: layers.map((l) => `**${l.id} ${l.name}**（${l.verdict} ${l.score}/5）：${(l.evidence || []).join('；')}`).join('\n'),
+    sample_assets: assets.length, avg_roas: +avg.toFixed(2), spend_p50: pct(0.5), spend_p90: pct(0.9),
+    matches: matches.sort((a, b) => Math.abs(b.lift) - Math.abs(a.lift)).slice(0, 8), est_roas: +est.toFixed(2), est_tier: tier,
+    refs: refs.map((a) => ({ short_name: a.short_name, roas: a.roas, spend: a.spend })),
   };
+}
+
+function demoUnderstanding(media_type, filename, values, meta, bench) {
+  const spu = Object.values(values || {}).find((v) => v && v.spu)?.spu || '商品';
+  const isVid = media_type === 'video';
+  let clips = ((meta && meta.clips) || []).map((c, i) => ({ id: `C${String(i + 1).padStart(2, '0')}`, start: c.start, end: c.end, cont: !!c.cont, thumb: c.thumb }));
+  if (!clips.length) clips = [{ id: 'C01', start: 0, end: 0, cont: false }];
+  const n = clips.length;
+  const roleSeq = (i) => (n === 1 ? 'Hook' : i === 0 ? 'Hook' : i === n - 1 ? 'CTA' : ['Problem', 'Demo', 'Proof', 'Benefit', 'Demo', 'Proof'][(i - 1) % 6]);
+  const SHOT = ['特写', '中景', '近景', '全景', '大特写', '中全景'], MOVE = ['推', '固定', '手持跟拍', '摇', '固定', '拉'];
+  const ROLE_FACT = {
+    Hook: ['P1 正对镜头，手持 G1 快速抬至画面中心', '大字幕弹出：「还在为这个烦恼？」'],
+    Problem: ['P1 在 S1 中皱眉拉扯衣领，随后叹气', '字幕「一到下午就闷热黏身」'],
+    Demo: ['手部特写拉伸 G1 面料并松开，面料回弹', '字幕「细节看得见」'],
+    Proof: ['G1 使用前后对比分屏，左右各 0.8s', '字幕「左：普通款 右：本款」'],
+    Benefit: ['P1 穿着 G1 在 S2 自然走动，转身后看向镜头', '字幕「一整天都舒服」'],
+    CTA: ['G1 居中静置，背景虚化', '底部按钮样式字幕「点击查看同款」'],
+  };
+  const fclips = clips.map((c, i) => {
+    const r = roleSeq(i);
+    const [act, sub] = ROLE_FACT[r] || ROLE_FACT.Demo;
+    return {
+      ...c, dur: +(c.end - c.start).toFixed(2), shot_size: SHOT[i % SHOT.length], angle: i % 3 === 2 ? '俯拍' : '平视',
+      movement: isVid ? (c.cont ? '固定（同镜头延续）' : MOVE[i % MOVE.length]) : '静帧', lens: i % 2 ? '标准 35mm' : '长焦 85mm',
+      lighting: i % 2 ? '左前 45° 柔光主光 + 右侧轮廓光，色温约 5200K' : '窗边自然光为主光，白色反光板补暗部，色温约 5600K',
+      composition: i % 2 ? '主体位于右三分线，浅景深虚化背景' : '主体居中，上方留白放字幕',
+      subject: i % 3 === 2 ? 'G1 细节' : 'P1 与 G1', action: act, products: ['G1'], product_detail: i % 2 ? '面料纹理与缝线' : '整体版型与颜色',
+      people: i % 3 === 2 ? [] : ['P1'], scene: i < n / 2 ? 'S1' : 'S2', dialogue: isVid ? (i === 0 ? '（演示）你是不是也遇到过…' : i === n - 1 ? '（演示）链接放在下面了' : '') : '',
+      subtitle: sub.replace(/^.*「|」.*$/g, ''), effects: i === 0 ? '字幕弹跳入场 + 轻微缩放' : '', transition_in: i === 0 ? '开场' : c.cont ? '同镜头延续' : '硬切',
+      color: '暖调，中高饱和，肤色偏暖',
+    };
+  });
+  const dur = meta && meta.duration;
+  const fact = {
+    overview: `演示数据：${isVid ? `一条约 ${fmtS(dur)} 的竖版视频，系统按画面突变切出 ${n} 个分镜。` : '一张静态图片。'}女性模特 P1 在室内 S1 与户外 S2 展示商品 G1（${spu}），以特写呈现细节，结尾商品居中并出现行动字幕。`,
+    format: { aspect: '9:16', duration_s: dur, style: isVid ? '实拍产品展示 + 口播' : '图文', sound: isVid ? '口播 + 轻快背景音乐' : '无', clip_count: n,
+      avg_clip_s: isVid ? +(dur / n).toFixed(2) : undefined },
+    products: [{ id: 'G1', name: spu, look: '主色与款式以画面为准（演示）', shown: '上身展示 + 细节特写', clips: fclips.map((c) => c.id), first_seen_s: 0 }],
+    people: { count: 1, list: [{ id: 'P1', gender: '女', age: '25–30', look: '偏瘦，黑色长发，淡妆', wardrobe: `${spu} + 浅色下装`, role: '模特/口播者', clips: fclips.filter((c) => c.people.length).map((c) => c.id) }] },
+    scenes: [{ id: 'S1', name: '卧室/衣帽间', type: '内景', time: '白天', props: ['落地镜', '衣架'], clips: fclips.filter((c) => c.scene === 'S1').map((c) => c.id) },
+      { id: 'S2', name: '街边', type: '外景', time: '白天', props: ['咖啡杯'], clips: fclips.filter((c) => c.scene === 'S2').map((c) => c.id) }],
+    audio: isVid ? { voiceover: 'P1 本人口播，英语，语速中等，语气亲切', music: '轻快流行，约 110 BPM', sfx: '字幕入场“叮”声' } : {},
+    script: fclips.filter((c) => c.dialogue).map((c) => ({ clip: c.id, t: tRange(c), type: '口播', text: c.dialogue })),
+    text_fx: fclips.map((c) => ({ clip: c.id, text: c.subtitle, style: c.id === 'C01' ? '居中白字黑描边，弹跳入场' : '下三分之一白字' })),
+    keywords: [spu, '细节', '对比', '同款'],
+    tags: [{ category: '形式', value: isVid ? '实拍展示' : '图文' }, { category: '人物', value: '单人女性' }, { category: '景别', value: '特写为主' }, { category: '灯光', value: '柔光' }],
+    departments: {
+      director: ['开场 0–2s 抛出问题，结尾停留商品 1.5s 给行动指令', `共 ${n} 个分镜，前紧后缓`],
+      dop: ['竖版 9:16，85mm 拍细节、35mm 拍人物', '细节镜头使用推镜'],
+      gaffer: ['窗光做主光 + 反光板', '外景顺光拍摄，避免硬阴影'],
+      art: ['落地镜、衣架、咖啡杯', '背景色与商品主色呼应'],
+      wardrobe_makeup: [`P1 穿 ${spu}`, '淡妆、黑色长发自然披肩'],
+      cast: ['P1 口播看镜头，展示时视线落在商品上'],
+      editor_vfx: ['硬切为主', '字幕弹跳动效', '结尾按钮样式 CTA'],
+      sound: ['口播收音 + 轻快 BGM', '字幕入场音效'],
+    },
+    clips: fclips,
+  };
+  const cognition = {
+    positioning: { category: '服饰', product_role: '主角', one_liner: `演示：用「问题钩子 + 细节证明」向注重质感的年轻女性卖 ${spu}` },
+    core_attraction: { type: '痛点共鸣', description: '开场字幕直接点名使用前的困扰，制造自我相关', clips: ['C01'] },
+    selling_points: {
+      primary: { point: '面料质感', fab: '特征：面料细密 → 优势：贴身不闷 → 利益：一整天穿着舒适', expression: '特写', clips: fclips.filter((c, i) => roleSeq(i) === 'Demo').map((c) => c.id) },
+      secondary: [{ point: '版型显瘦', fab: '特征：收腰剪裁 → 优势：修饰身形 → 利益：上镜好看', expression: '上身展示', clips: fclips.filter((c, i) => roleSeq(i) === 'Benefit').map((c) => c.id) }],
+    },
+    buying_points: {
+      jtbd: '想在通勤与周末都穿得体面又舒服', motives: [{ type: '尊重需要', desc: '被看见、被认可的外在形象' }, { type: '安全/舒适', desc: '长时间穿着不难受' }],
+      emotions: [{ emotion: '期待', intensity: 3, clips: ['C01'] }, { emotion: '信任', intensity: 3, clips: fclips.filter((c, i) => roleSeq(i) === 'Proof').map((c) => c.id) }, { emotion: '愉悦', intensity: 2, clips: [fclips[n - 1].id] }],
+      emotional_arc: '困扰 → 好奇 → 确认 → 轻松', atmosphere: '明亮、日常、轻生活方式',
+    },
+    audience: { persona: '25–34 岁都市女性，注重性价比与质感', awareness: '问题意识', sophistication: '同类商品多，需要靠细节证明差异', scenario: '通勤、周末出街' },
+    persuasion: { structure: 'PAS（问题-放大-方案）', route: '混合：细节特写走中心路径，模特形象走边缘路径',
+      principles: [{ name: '社会认同', evidence: '真人上身展示', clips: fclips.filter((c) => c.people.length).slice(0, 2).map((c) => c.id) }], proof_types: ['演示', '对比', '质感'] },
+    abcd: { attention: 'C01 问题字幕 + 商品抬入画面', branding: `G1 在 C01 即出现，全片 ${n} 个分镜均可见`, connection: '真人日常场景', direction: `结尾 ${fclips[n - 1].id} 出现「点击查看同款」` },
+    fogg: { motivation: '想要好看又舒服', ability: '「同款」降低搜索成本', prompt: '结尾按钮样式字幕' },
+    meta_fit: { first_3s: '0–2s 出现问题字幕与商品', sound_off: '主要信息有字幕承载', vertical: '9:16 全屏', native_feel: '口播 + 生活场景，偏原生' },
+    clip_roles: fclips.map((c, i) => {
+      const r = roleSeq(i);
+      return { clip: c.id, role: r, function: { Hook: '停滑并抛出议题', Problem: '让目标用户代入问题', Demo: '展示商品如何解决问题', Proof: '提供可信证据', Benefit: '把功能翻译成生活利益', CTA: '给出明确下一步' }[r],
+        mechanism: { Hook: '自我相关 + 未完成感', Problem: '损失厌恶', Demo: '具体性效应', Proof: '眼见为实 / 对比效应', Benefit: '心理模拟（想象自己穿上）', CTA: '降低行动门槛' }[r],
+        reuse: { Hook: '开头钩子', CTA: '结尾转化', Proof: '中段证明', Demo: '中段证明', Problem: '开头第二镜', Benefit: '中段/结尾前' }[r] };
+    }),
+    tags: [{ category: '钩子类型', value: '痛点提问' }, { category: '说服结构', value: 'PAS' }, { category: '认知阶段', value: '问题意识' }, { category: '情绪', value: '期待→信任' }],
+  };
+  const est = bench ? bench.est_roas : 2.1;
+  const last = fclips[n - 1], first = fclips[0];
+  const judgment = {
+    prediction: { spend_tier: bench ? bench.est_tier : 'B', roas_low: +(est * 0.88).toFixed(2), roas_high: +(est * 1.12).toFixed(2),
+      vs_baseline: bench ? (est > bench.avg_roas * 1.05 ? '高于' : est < bench.avg_roas * 0.95 ? '低于' : '持平') : '持平', confidence: bench ? 0.55 : 0.35,
+      summary: `演示判断：以同标签历史 ROAS 为锚点；开场问题钩子与细节特写是加分项，CTA 停留偏短与证明镜头偏少是主要拖累。` },
+    funnel: [['L1', 4, 'pass', '首帧即出现问题字幕与商品', [first.id]], ['L2', 3, 'weak', '人群线索只有模特年龄感，缺少场景点名', [first.id]],
+      ['L3', 3, 'weak', 'PAS 结构完整但放大段较短', fclips.slice(1, 3).map((c) => c.id)], ['L4', 3, 'weak', '只有 1 处对比证明', fclips.filter((c, i) => roleSeq(i) === 'Proof').map((c) => c.id)],
+      ['L5', 4, 'pass', '景别有特写/中景交替，光线干净', []], ['L6', 3, 'weak', `CTA 仅出现在 ${last.id}`, [last.id]], ['L7', 4, 'pass', '钩子与证明镜头可单独替换', []]]
+      .map(([id, score, verdict, reason, clips]) => ({ id, score, verdict, reason, clips })),
+    positives: [{ factor: '首镜即出商品 + 问题字幕', clips: [first.id], evidence: `${first.id}：${first.action}`, benchmark: bench && bench.matches[0] ? `${bench.matches[0].dim}=${bench.matches[0].label} 历史 ROAS ${(+bench.matches[0].roas).toFixed(2)}` : '创意规律', impact: '高' }],
+    negatives: [{ factor: 'CTA 停留过短', clips: [last.id], evidence: `${last.id} 时长 ${fmtS(last.dur)}`, benchmark: '创意规律：CTA 停留 ≥1.5s 点击率更稳', impact: '中' },
+      { factor: '证明镜头不足', clips: fclips.filter((c, i) => roleSeq(i) === 'Proof').map((c) => c.id), evidence: '全片仅 1 处前后对比', benchmark: '创意规律', impact: '中' }],
+    edits: [
+      { priority: 1, clip: first.id, target: tRange(first), type: '字幕', current: first.subtitle, change: '改为「通勤一整天也不闷？」并在 0.3s 内弹出', reason: '把痛点具体到使用场景，提高自我相关', expected: '钩子率 ↑',
+        prompt: `字幕替换：${first.id}（${tRange(first)}）主字幕改为「通勤一整天也不闷？」，居中白字黑描边，0.3s 弹跳入场，保持原画面不变。` },
+      { priority: 2, clip: last.id, target: tRange(last), type: '分镜替换', current: last.action, change: `延长至 2s：P1 手持 ${spu} 面向镜头微笑，下方按钮字幕「点击查看同款 →」`, reason: 'CTA 停留太短，用户来不及行动', expected: 'CTR ↑',
+        prompt: `9:16 竖版，2 秒。25–30 岁亚洲女性 P1，偏瘦、黑色长发自然披肩、淡妆，身穿 ${spu}（颜色款式与原片一致）。站在明亮的卧室落地镜前，双手将商品轻轻举到胸前并朝镜头微笑，动作从静止开始、1 秒内完成、最后停住。中景平视，镜头缓慢推近 5%，35mm 标准焦段，浅景深。窗边自然光作主光，白色反光板补光，色温约 5600K，暖调中高饱和。真实生活方式质感。底部留出字幕安全区。不出现任何文字水印，手指与肢体不变形，商品外观与 logo 不改变。`,
+        prompt_en: `9:16 vertical, 2 seconds. Asian woman (P1), 25–30, slim, long straight black hair, natural makeup, wearing ${spu} (same color and style as the original). In a bright bedroom in front of a floor mirror, she gently raises the product to chest level and smiles at camera; motion starts from still, completes within 1s, then holds. Medium shot, eye level, slow 5% push-in, 35mm, shallow depth of field. Window daylight key light with white bounce fill, ~5600K, warm, mid-high saturation. Authentic lifestyle look. Keep the lower third clear for captions. No text or watermark, no deformed hands or limbs, product appearance and logo unchanged.` },
+    ],
+    keep: [`${first.id} 商品入画方式`, '人物与场景', '整体色调与音乐'],
+    benchmark: bench,
+  };
+  return { version: 'fcj-1', media_type, duration: dur, clips_source: meta && meta.clips && meta.clips.length > 1 ? 'auto_cut' : 'uniform',
+    one_liner: cognition.positioning.one_liner, fact, cognition, judgment };
 }
 
 function demoCreateAsset({ filename, media_type, size, thumb, blobUrl }) {
@@ -178,7 +280,7 @@ function demoCreateAsset({ filename, media_type, size, thumb, blobUrl }) {
     description: understanding.one_liner,
     full_name: names.full_name, short_name: names.short_name, media_ids: [], status: 'pending',
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(), learned_ids: [], short_history: '',
-    values, ai_tags, understanding, ai_raw: { pipeline: 'efd7-demo', understanding }, mode: 'demo', demo: true,
+    values, ai_tags, understanding, ai_raw: { pipeline: 'fcj-demo', understanding }, mode: 'demo', demo: true,
   };
   DEMO_SESSION.assets[id] = a;
   return clone(a);
@@ -204,12 +306,16 @@ async function api(method, path, body, opts = {}) {
       if (!a) throw new Error('演示素材不存在');
       if (body && body.thumb) a.thumb = body.thumb;
       if (!a.ai_tags.length) a.ai_tags = demoAiTags();
-      if (!a.understanding) a.understanding = demoUnderstanding(a.media_type, a.filename, a.values);
+      if (DEMO_SESSION.an === undefined) {
+        DEMO_SESSION.an = await fetch(staticFile('/api/analytics')).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      }
+      a.understanding = demoUnderstanding(a.media_type, a.filename, a.values, { clips: body && body.clips, duration: body && body.duration },
+        demoBench(DEMO_SESSION.an, a.values));
       Object.assign(a, demoBuildNames(a.seq, a.values, a.ai_tags));
       a.mode = 'demo';
       a.status = 'pending';
       a.description = a.understanding.one_liner || a.description;
-      a.ai_raw = { pipeline: 'efd7-demo', understanding: a.understanding };
+      a.ai_raw = { pipeline: 'fcj-demo', understanding: a.understanding };
       DEMO_SESSION.assets[a.id] = a;
       return clone(a);
     }
@@ -321,25 +427,108 @@ function drawFrame(el, max, q = 0.75) {
   return cv.toDataURL('image/jpeg', q);
 }
 
-async function extractFrames(src, mediaType) {
+const seekTo = (el, t) => new Promise((res) => { el.onseeked = res; el.currentTime = t; });
+
+function frameSig(el, cv) {
+  const g = cv.getContext('2d', { willReadFrequently: true });
+  g.drawImage(el, 0, 0, cv.width, cv.height);
+  const d = g.getImageData(0, 0, cv.width, cv.height).data;
+  const px = new Float32Array(d.length / 4 * 3), hist = new Float32Array(48);
+  for (let i = 0, j = 0; i < d.length; i += 4, j += 3) {
+    px[j] = d[i]; px[j + 1] = d[i + 1]; px[j + 2] = d[i + 2];
+    hist[d[i] >> 4]++; hist[16 + (d[i + 1] >> 4)]++; hist[32 + (d[i + 2] >> 4)]++;
+  }
+  return { px, hist, n: d.length / 4 };
+}
+
+function sigDiff(a, b) {
+  let p = 0, h = 0;
+  for (let i = 0; i < a.px.length; i++) p += Math.abs(a.px[i] - b.px[i]);
+  for (let i = 0; i < 48; i++) h += Math.abs(a.hist[i] - b.hist[i]);
+  return 0.5 * p / (a.px.length * 255) + 0.5 * h / (a.n * 6);
+}
+
+// 画面突变切镜：像素差 + 颜色直方图差，阈值随片子自身的运动幅度自适应
+async function detectCuts(el, duration) {
+  const step = Math.max(0.2, Math.min(duration, 180) / 160);
+  const cv = document.createElement('canvas');
+  cv.width = 48; cv.height = 27;
+  const ds = [];
+  let prev = null;
+  for (let t = 0; t < duration - 0.05; t += step) {
+    await seekTo(el, t);
+    const s = frameSig(el, cv);
+    if (prev) ds.push({ t, d: sigDiff(prev, s) });
+    prev = s;
+  }
+  const sorted = ds.map((x) => x.d).sort((a, b) => a - b);
+  const med = sorted[Math.floor(sorted.length / 2)] || 0;
+  const thr = Math.max(0.12, med * 4);
+  const cuts = [];
+  for (let i = 0; i < ds.length; i++) {
+    const x = ds[i];
+    const local = x.d >= (ds[i - 1]?.d || 0) && x.d >= (ds[i + 1]?.d || 0);
+    if (x.d > thr && local && x.t - (cuts[cuts.length - 1] ?? 0) >= 0.45) cuts.push(+x.t.toFixed(2));
+  }
+  return cuts;
+}
+
+function buildClips(cuts, duration) {
+  const bounds = [0, ...cuts, duration];
+  let clips = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const st = bounds[i], en = bounds[i + 1];
+    // 超长单镜头（如整段口播）按 ≤5s 拆成同镜头续段，便于逐段理解与混剪
+    const parts = Math.max(1, Math.ceil((en - st) / 5));
+    for (let k = 0; k < parts; k++) {
+      clips.push({ start: +(st + (en - st) * k / parts).toFixed(2), end: +(st + (en - st) * (k + 1) / parts).toFixed(2), cont: k > 0 });
+    }
+  }
+  while (clips.length > 40) {
+    let mi = 0;
+    clips.forEach((c, i) => { if (i < clips.length - 1 && c.end - c.start + clips[i + 1].end - clips[i + 1].start < clips[mi].end - clips[mi].start + clips[mi + 1].end - clips[mi + 1].start) mi = i; });
+    clips.splice(mi, 2, { start: clips[mi].start, end: clips[mi + 1].end, cont: clips[mi].cont });
+  }
+  return clips;
+}
+
+async function extractFrames(src, mediaType, onStep) {
   const isVideo = mediaType === 'video';
   const el = await loadMedia(src, isVideo);
   const frames = [];
-  let thumb, duration = null;
+  let thumb, duration = null, clips;
   if (isVideo) {
-    duration = el.duration || 1;
-    const n = duration < 6 ? 3 : 6;
-    for (let i = 0; i < n; i++) {
-      await new Promise((res) => { el.onseeked = res; el.currentTime = Math.min(duration - 0.05, duration * (i + 0.3) / n); });
-      frames.push(drawFrame(el, 640, 0.7));
-      if (i === 0) thumb = drawFrame(el, 320, 0.7);
+    if (!Number.isFinite(el.duration)) {
+      await new Promise((res) => {
+        const fin = () => { el.ondurationchange = el.onseeked = null; res(); };
+        el.ondurationchange = el.onseeked = fin;
+        setTimeout(fin, 4000);
+        el.currentTime = 1e7;
+      });
     }
+    duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : el.currentTime || 1;
+    if (onStep) onStep('智能切镜');
+    clips = buildClips(await detectCuts(el, duration), duration);
+    const big = clips.length > 16 ? 448 : 640;
+    for (const c of clips) {
+      await seekTo(el, Math.min(duration - 0.05, (c.start + c.end) / 2));
+      frames.push(drawFrame(el, big, 0.7));
+      c.thumb = drawFrame(el, 200, 0.65);
+    }
+    await seekTo(el, Math.min(0.1, duration / 2));
+    thumb = drawFrame(el, 320, 0.7);
   } else {
     frames.push(drawFrame(el, 1024, 0.8));
     thumb = drawFrame(el, 320, 0.7);
+    clips = [{ start: 0, end: 0, cont: false, thumb: drawFrame(el, 200, 0.65) }];
   }
-  return { frames, thumb, duration };
+  return { frames, thumb, duration, clips };
 }
+
+const analyzeBody = (ex) => ({
+  frames: ex.frames || [], thumb: ex.thumb, duration: ex.duration,
+  clips: (ex.clips || []).map(({ start, end, cont, thumb }) => ({ start, end, cont, thumb })),
+});
 
 /* ------------------------------------------------------------------ 命名编辑器 */
 
@@ -348,42 +537,203 @@ function productOptions(selectedId) {
     `<option value="${p.id}" ${String(p.id) === String(selectedId) ? 'selected' : ''}>${esc(p.spu)} · ${esc((p.title || '').slice(0, 40))}</option>`).join('');
 }
 
-function understandingHtml(u) {
-  if (!u) return '';
-  const vCls = (v) => ({ pass: 'ok', weak: 'new', fail: 'bad' }[v] || '');
-  const layers = (u.layers || []).map((ly) => `<div class="efd-layer">
-      <div class="efd-h"><span class="badge ${vCls(ly.verdict)}">${esc(ly.id || '')}</span><b>${esc(ly.name || '')}</b>
-        <span class="small muted">${ly.score != null ? `${ly.score}/5` : ''} · ${esc(ly.metric_proxy || '')}${ly.impact != null ? ` · 影响力${ly.impact}/7` : ''}</span></div>
-      ${ly.why_it_matters ? `<div class="small muted">${esc(ly.why_it_matters)}</div>` : ''}
-      <div class="efd-e">${(ly.evidence || []).map((e) => `<span>${esc(e)}</span>`).join('') || '<span class="muted">暂无证据</span>'}</div>
-      ${ly.improve ? `<div class="efd-i">改进：${esc(ly.improve)}</div>` : ''}</div>`).join('');
-  const beats = (u.beats || []).length ? `<div class="efd-beats">${u.beats.map((b) => `<div class="efd-beat"><b>${esc(b.t || '')}</b> ${esc(b.name || '')}
-      <div class="small muted">${esc(b.visual || '')}${b.audio ? ' · ' + esc(b.audio) : ''}</div>
-      <div class="small">${esc(b.intent || '')}</div></div>`).join('')}</div>` : '';
-  const craft = u.craft || {}, script = u.script || {}, brief = u.replication_brief || {};
-  return `<div class="efd">
-    <div class="efd-top"><div><b>① 内容理解</b> <span class="badge ai">${esc(u.methodology_name || 'EFD-7')}</span>
-      <div class="small muted">按广告效果影响力从大到小拆解；上层不及格时，下层再精美也救不了投放。</div></div>
-      <button type="button" class="btn sm" data-act="copyiter">复制迭代提示词</button>
-      <button type="button" class="btn sm ghost" data-act="copyund">复制理解摘要</button></div>
-    <div class="efd-one">${esc(u.one_liner || '')}</div>
-    ${u.product_on_screen ? `<div class="small muted">画面商品：${esc(u.product_on_screen)}</div>` : ''}
-    <div class="efd-layers">${layers}</div>
-    ${beats}
-    <div class="efd-grid">
-      <div><h4 class="sub-h">视听语言</h4>
-        <div class="small">灯光 ${esc(craft.lighting || '—')} · 摄影 ${esc(craft.camera || '—')}</div>
-        <div class="small">构图 ${esc(craft.composition || '—')} · 转场 ${esc(craft.transitions || '—')} · 节奏 ${esc(craft.pacing || '—')}</div></div>
-      <div><h4 class="sub-h">台词与信息</h4>
-        <div class="small">口播：${esc(script.spoken || '—')}</div>
-        <div class="small">字幕：${esc(script.on_screen_text || '—')}</div>
-        <div class="small">CTA：${esc(script.cta || '—')}</div></div>
+const ROLE_COLOR = {
+  Hook: '#e5484d', Context: '#12a3a3', Problem: '#f08c00', Agitate: '#f76707', Demo: '#4f5bd5', Proof: '#2f80ed',
+  Benefit: '#12a36b', Offer: '#8e44ad', CTA: '#a21caf', Brand: '#6b7280', Bridge: '#a0a6b8',
+};
+const ROLE_CN = {
+  Hook: '钩子', Context: '情境', Problem: '痛点', Agitate: '放大', Demo: '演示', Proof: '证明',
+  Benefit: '利益', Offer: '优惠', CTA: '行动', Brand: '品牌', Bridge: '过渡',
+};
+const DEPTS = [['director', '导演/编剧'], ['dop', '摄影指导'], ['gaffer', '灯光'], ['art', '美术/道具'],
+  ['wardrobe_makeup', '服装/化妆'], ['cast', '演员/调度'], ['editor_vfx', '剪辑/包装'], ['sound', '录音/音乐']];
+const FUNNEL_NAMES = { L1: '注意力', L2: '认同', L3: '叙事', L4: '信任', L5: '视听', L6: '台词', L7: '可复刻' };
+
+const fmtS = (x) => (x == null || x === '' || Number.isNaN(+x) ? '' : `${(+x).toFixed(1)}s`);
+const tRange = (c) => (c.start == null ? (c.label || '') : c.end > c.start ? `${fmtS(c.start)}–${fmtS(c.end)}` : '静帧');
+const txt = (v) => (Array.isArray(v) ? v.map(txt).filter(Boolean).join('、')
+  : v == null ? '' : typeof v === 'object' ? Object.values(v).map(txt).filter(Boolean).join(' · ') : String(v));
+const kv = (k, v) => (txt(v) ? `<div class="kv"><span>${esc(k)}</span><div>${esc(txt(v))}</div></div>` : '');
+const crefs = (ids) => {
+  const arr = [].concat(ids || []).filter(Boolean);
+  return arr.length ? `<span class="crefs">${arr.map((id) => `<button type="button" class="cref" data-seek="${esc(id)}">${esc(id)}</button>`).join('')}</span>` : '';
+};
+const tagChips = (arr) => (arr || []).filter((t) => t && (t.value || t.cn || typeof t === 'string')).map((t) => typeof t === 'string'
+  ? `<span class="chip">${esc(t)}</span>` : `<span class="chip"><span class="cat">${esc(t.category || '')}</span>${esc(t.value || t.cn)}</span>`).join('');
+const roleOf = (u, id) => ((u.cognition && u.cognition.clip_roles) || []).find((x) => x.clip === id);
+const roleBadge = (r) => (r && r.role ? `<span class="role" style="background:${ROLE_COLOR[r.role] || '#666'}">${esc(r.role)} ${esc(ROLE_CN[r.role] || '')}</span>` : '');
+const box = (title, body, cls = '') => (body ? `<div class="mod ${cls}"><div class="mod-h">${title}</div>${body}</div>` : '');
+
+function timelineHtml(u) {
+  const clips = (u.fact && u.fact.clips) || [];
+  if (clips.length < 2 || clips[0].start == null) return '';
+  const used = new Set();
+  const segs = clips.map((c) => {
+    const r = roleOf(u, c.id);
+    if (r && r.role) used.add(r.role);
+    return `<button type="button" class="tl-seg${c.cont ? ' cont' : ''}" data-seek="${c.id}" data-clip="${c.id}"
+      style="flex:${Math.max(0.05, c.end - c.start)};background:${(r && ROLE_COLOR[r.role]) || '#c6cae0'}"
+      title="${esc(`${c.id} ${tRange(c)} ${r ? r.role + ' · ' + (r.function || '') : ''}`)}"><span>${c.id.slice(1)}</span></button>`;
+  }).join('');
+  return `<div class="tl">${segs}<div class="tl-head" data-r="playhead"></div></div>
+    <div class="tl-legend">${[...used].map((k) => `<span><i style="background:${ROLE_COLOR[k]}"></i>${ROLE_CN[k] || k}</span>`).join('')}</div>`;
+}
+
+function clipCard(c, u) {
+  const r = roleOf(u, c.id);
+  return `<div class="clip" data-clip="${c.id}">
+    <div class="clip-img" data-seek="${c.id}">${c.thumb ? `<img src="${c.thumb}">` : '<div class="ph">无关键帧</div>'}
+      <span class="clip-t">${c.id} · ${esc(tRange(c))}${c.cont ? ' · 续' : ''}</span>${roleBadge(r)}</div>
+    <div class="clip-b">
+      <div class="clip-cam">${[c.shot_size, c.angle, c.movement, c.lens].filter(Boolean).map(esc).join(' · ') || '<span class="muted">镜头信息待识别</span>'}</div>
+      ${kv('主体', c.subject)}${kv('动作', c.action)}
+      ${kv('商品', [txt(c.products), c.product_detail].filter(Boolean).join(' '))}
+      ${kv('人物', c.people)}${kv('场景', c.scene)}
+      ${kv('灯光', c.lighting)}${kv('构图', c.composition)}${kv('色调', c.color)}
+      ${kv('台词', c.dialogue)}${kv('字幕', c.subtitle)}${kv('特效', c.effects)}${kv('转场', c.transition_in)}
+    </div></div>`;
+}
+
+function factHtml(u) {
+  const f = u.fact || {}, fm = f.format || {}, pp = f.people || {}, au = f.audio || {};
+  const meta = [['时长', fmtS(fm.duration_s || u.duration)], ['画幅', fm.aspect], ['形式', fm.style], ['声音', fm.sound],
+    ['分镜', fm.clip_count ? `${fm.clip_count} 个` : ''], ['平均镜长', fmtS(fm.avg_clip_s)],
+    ['切镜', u.clips_source === 'auto_cut' ? '画面突变自动切镜' : u.clips_source === 'uniform' ? '均匀抽帧' : ''],
+    ['口播转写', f.asr ? `已转写 ${f.asr.language || ''}` : '']].filter((x) => x[1]);
+  const items = (arr, fn) => (arr || []).filter((x) => x && typeof x === 'object').map(fn).join('');
+  const mods = [
+    box(`出镜商品 <b>${(f.products || []).length}</b>`, items(f.products, (p) => `<div class="it"><b>${esc(p.id || '')}</b> ${esc(p.name || '')}
+      <div class="small muted">${esc([p.look, p.shown].filter(Boolean).join(' · '))}</div>${crefs(p.clips)}</div>`)),
+    box(`人物 <b>${pp.count ?? (pp.list || []).length}</b>`, items(pp.list, (p) => `<div class="it"><b>${esc(p.id || '')}</b> ${esc([p.gender, p.age, p.role].filter(Boolean).join(' · '))}
+      <div class="small muted">${esc([p.look, p.wardrobe].filter(Boolean).join(' · '))}</div>${crefs(p.clips)}</div>`) || '<div class="small muted">无人物出镜</div>'),
+    box(`场景 <b>${(f.scenes || []).length}</b>`, items(f.scenes, (s) => `<div class="it"><b>${esc(s.id || '')}</b> ${esc(s.name || '')}
+      <div class="small muted">${esc([s.type, s.time, txt(s.props)].filter(Boolean).join(' · '))}</div>${crefs(s.clips)}</div>`)),
+    box('声音', kv('口播', au.voiceover) + kv('音乐', au.music) + kv('音效', au.sfx)),
+    box('台词脚本', items(f.script, (s) => `<div class="it"><button type="button" class="cref" data-seek="${esc(s.clip || '')}">${esc(s.clip || '')}</button>
+      <span class="small muted">${esc(s.t || '')} ${esc(s.type || '')}</span><div>${esc(s.text || '')}</div></div>`), 'wide'),
+    box('字幕 / 特效', items(f.text_fx, (s) => `<div class="it"><button type="button" class="cref" data-seek="${esc(s.clip || '')}">${esc(s.clip || '')}</button>
+      ${esc(s.text || '')}<div class="small muted">${esc(s.style || '')}</div></div>`)),
+    box('关键词 · 打标', `${(f.keywords || []).length ? `<div class="chips">${(f.keywords || []).map((k) => `<span class="chip">${esc(k)}</span>`).join('')}</div>` : ''}
+      <div class="chips" style="margin-top:6px">${tagChips(f.tags)}</div>`),
+  ].filter(Boolean).join('');
+  const depts = DEPTS.filter(([k]) => (f.departments || {})[k] && txt(f.departments[k]))
+    .map(([k, n]) => `<div class="dept"><b>${n}</b><ul>${[].concat(f.departments[k]).map((x) => `<li>${esc(txt(x))}</li>`).join('')}</ul></div>`).join('');
+  const clips = (f.clips || []);
+  return `<div class="ov"><div class="ov-h">总述</div><p>${esc(f.overview || '—')}</p>
+      <div class="chips">${meta.map(([k, v]) => `<span class="chip"><span class="cat">${k}</span>${esc(v)}</span>`).join('')}</div></div>
+    <div class="mods">${mods}</div>
+    ${depts ? `<details class="depts"><summary>剧组岗位视角 · 复刻准备清单</summary><div class="dept-grid">${depts}</div></details>` : ''}
+    <div class="sec-h">分镜拆解 <span class="small muted">${clips.length} 个分镜 · 点击关键帧跳到对应秒数</span></div>
+    <div class="clips">${clips.map((c) => clipCard(c, u)).join('') || '<div class="small muted">暂无分镜</div>'}</div>`;
+}
+
+function cogHtml(u) {
+  const g = u.cognition || {};
+  const empty = !g.positioning || !Object.keys(g.positioning).length && !(g.clip_roles || []).length;
+  if (empty) return '<div class="empty">认知层需要 AI：请在设置中配置 AI Key 后重新识别。</div>';
+  const po = g.positioning, ca = g.core_attraction, sp = g.selling_points || {}, bp = g.buying_points || {},
+    au = g.audience || {}, ps = g.persuasion || {}, ab = g.abcd || {}, fo = g.fogg || {}, mf = g.meta_fit || {};
+  const pt = (x) => (x && x.point ? `<div class="it"><b>${esc(x.point)}</b>${crefs(x.clips)}
+    <div class="small">${esc(x.fab || '')}</div><div class="small muted">表达方式：${esc(x.expression || '—')}</div></div>` : '');
+  const emos = (bp.emotions || []).map((e) => `<span class="chip">${esc(e.emotion || '')}<span class="dots">${'●'.repeat(Math.max(0, Math.min(5, +e.intensity || 0)))}</span>${crefs(e.clips)}</span>`).join('');
+  const clips = (u.fact && u.fact.clips) || [];
+  const roles = (g.clip_roles || []).map((r) => {
+    const c = clips.find((x) => x.id === r.clip) || {};
+    return `<div class="clip role-card" data-clip="${esc(r.clip)}">
+      <div class="clip-img sm" data-seek="${esc(r.clip)}">${c.thumb ? `<img src="${c.thumb}">` : '<div class="ph"></div>'}
+        <span class="clip-t">${esc(r.clip)} · ${esc(tRange(c))}</span>${roleBadge(r)}</div>
+      <div class="clip-b">${kv('作用', r.function)}${kv('机制', r.mechanism)}${kv('复用', r.reuse)}</div></div>`;
+  }).join('');
+  return `<div class="ov"><div class="ov-h">定位</div><p>${esc(po.one_liner || u.one_liner || '')}</p>
+      <div class="chips">${po.category ? `<span class="chip"><span class="cat">品类</span>${esc(po.category)}</span>` : ''}${po.product_role ? `<span class="chip"><span class="cat">商品角色</span>${esc(po.product_role)}</span>` : ''}</div></div>
+    <div class="mods">
+      ${box('核心吸引力', ca && (ca.type || ca.description) ? `<div class="it"><span class="badge pri">${esc(ca.type || '')}</span> ${esc(ca.description || '')}${crefs(ca.clips)}</div>` : '')}
+      ${box('受众与认知阶段', kv('画像', au.persona) + kv('认知阶段', au.awareness) + kv('市场成熟度', au.sophistication) + kv('使用场景', au.scenario))}
+      ${box('卖点（商品给什么 · FAB）', (sp.primary && sp.primary.point ? '<div class="small muted">主卖点</div>' + pt(sp.primary) : '')
+        + ((sp.secondary || []).length ? '<div class="small muted" style="margin-top:6px">次卖点</div>' + sp.secondary.map(pt).join('') : ''), 'wide')}
+      ${box('买点（用户为什么买）', kv('要完成的任务', bp.jtbd) + kv('动机', (bp.motives || []).map((m) => `${m.type || ''}：${m.desc || ''}`))
+        + (emos ? `<div class="kv"><span>情绪</span><div class="chips">${emos}</div></div>` : '') + kv('情绪走向', bp.emotional_arc) + kv('氛围', bp.atmosphere), 'wide')}
+      ${box('说服机制', kv('结构', ps.structure) + kv('加工路径', ps.route) + kv('证据类型', ps.proof_types)
+        + (ps.principles || []).map((p) => `<div class="it"><b>${esc(p.name || '')}</b> ${esc(p.evidence || '')}${crefs(p.clips)}</div>`).join(''), 'wide')}
+      ${box('ABCD', kv('Attention', ab.attention) + kv('Branding', ab.branding) + kv('Connection', ab.connection) + kv('Direction', ab.direction))}
+      ${box('Fogg 行为模型', kv('动机', fo.motivation) + kv('能力', fo.ability) + kv('提示', fo.prompt))}
+      ${box('Meta 投放适配', kv('前 3 秒', mf.first_3s) + kv('无声可读', mf.sound_off) + kv('竖版', mf.vertical) + kv('原生感', mf.native_feel))}
     </div>
-    <div class="efd-brief"><h4 class="sub-h">可复刻 / 迭代</h4>
-      <div class="small">必须保留：${(brief.must_keep || []).map(esc).join('；') || '—'}</div>
-      <div class="small">可测变量：${(brief.variables_to_test || []).map(esc).join('；') || '—'}</div>
-      <pre class="efd-prompt" data-r="iter">${esc(brief.iteration_prompt || '')}</pre></div>
-  </div>`;
+    <div class="sec-h">分镜功能 <span class="small muted">每个分镜在广告里承担什么、为什么起作用、混剪时放哪里</span></div>
+    <div class="clips">${roles || '<div class="small muted">暂无</div>'}</div>
+    ${(g.tags || []).length ? `<div class="sec-h">认知标签</div><div class="chips">${tagChips(g.tags)}</div>` : ''}
+    <div class="small muted" style="margin-top:12px">方法论：${(g.frameworks || []).map(esc).join('；')}</div>`;
+}
+
+function judgeHtml(u) {
+  const j = u.judgment || {}, p = j.prediction || {}, b = j.benchmark;
+  const vsCls = { 高于: 'ok', 低于: 'bad' }[p.vs_baseline] || '';
+  const conf = p.confidence != null ? Math.round(+p.confidence * 100) : null;
+  const pred = `<div class="pred">
+    <div class="tier tier-${esc(p.spend_tier || 'X')}">${esc(p.spend_tier || '?')}<small>消耗档位</small></div>
+    <div class="pred-m"><div class="pred-roas">${p.roas_low != null && p.roas_high != null ? `ROAS ${(+p.roas_low).toFixed(2)} – ${(+p.roas_high).toFixed(2)}` : 'ROAS 待判断'}
+      ${p.vs_baseline ? `<span class="badge ${vsCls}">${esc(p.vs_baseline)}账户均值</span>` : ''}</div>
+      ${conf != null ? `<div class="conf"><i style="width:${conf}%"></i></div><div class="small muted">置信度 ${conf}%</div>` : ''}
+      <p>${esc(p.summary || '')}</p></div></div>
+    <div class="small muted tier-key">S 可放量主力 · A 稳定消耗 · B 小量消耗 · C 难起量</div>`;
+  const basis = b ? `<details class="basis" open><summary>判断依据 · 历史投放基准（${b.sample_assets} 条有消耗素材，账户 ROAS ${b.avg_roas}）</summary>
+      <div class="small">统计先验：ROAS ≈ <b>${b.est_roas}</b> · 档位 <b>${esc(b.est_tier)}</b> · 单素材消耗中位 ${Math.round(b.spend_p50)} / P90 ${Math.round(b.spend_p90)}</div>
+      ${(b.matches || []).length ? `<table class="t mini"><thead><tr><th>同标签</th><th class="num">素材</th><th class="num">消耗</th><th class="num">ROAS</th><th class="num">较均值</th></tr></thead><tbody>
+        ${b.matches.map((m) => `<tr><td>${esc(m.dim)}：${esc(m.label)}</td><td class="num">${m.assets}</td><td class="num">${Math.round(m.spend)}</td><td class="num">${(+m.roas).toFixed(2)}</td>
+        <td class="num" style="color:${m.lift >= 0 ? 'var(--ok)' : 'var(--bad)'}">${m.lift >= 0 ? '+' : ''}${Math.round(m.lift * 100)}%</td></tr>`).join('')}</tbody></table>` : '<div class="small muted">没有与本素材标签相同的历史素材</div>'}
+      ${(b.refs || []).length ? `<div class="small">高 ROAS 参照：${b.refs.map((r) => `<code>${esc(r.short_name)}</code> ${(+r.roas).toFixed(2)}`).join('；')}</div>` : ''}</details>`
+    : '<div class="small muted">无历史投放数据，判断仅依据创意规律。导入投放数据后重新识别可获得统计先验。</div>';
+  const funnel = (j.funnel || []).length ? `<div class="efn">${j.funnel.map((l) => {
+    const cls = { pass: 'ok', weak: 'new', fail: 'bad' }[l.verdict] || '';
+    return `<div class="efn-c ${cls}" title="${esc(l.reason || '')}"><b>${esc(l.id)}</b><span>${esc(FUNNEL_NAMES[l.id] || l.name || '')}</span>
+      <div class="efn-bar"><i style="width:${(+l.score || 0) * 20}%"></i></div><small>${l.score != null ? l.score + '/5' : '—'}</small></div>`;
+  }).join('')}</div>
+    <div class="efn-reasons">${j.funnel.filter((l) => l.reason).map((l) => `<div class="small"><b>${esc(l.id)}</b> ${esc(l.reason)} ${crefs(l.clips)}</div>`).join('')}</div>` : '';
+  const factor = (x) => `<div class="it"><b>${esc(x.factor || '')}</b> <span class="badge">${esc(x.impact || '')}影响</span>${crefs(x.clips)}
+    ${x.evidence ? `<div class="small">事实：${esc(x.evidence)}</div>` : ''}${x.benchmark ? `<div class="small muted">数据：${esc(x.benchmark)}</div>` : ''}</div>`;
+  const edits = (j.edits || []).map((e, i) => `<div class="edit">
+    <div class="edit-h"><span class="pri-n">${e.priority || i + 1}</span><span class="badge pri">${esc(e.type || '')}</span>
+      ${e.clip ? `<button type="button" class="cref" data-seek="${esc(e.clip)}">${esc(e.clip)}</button>` : ''}<span class="small muted">${esc(e.target || '')}</span>
+      <span class="grow"></span>${e.expected ? `<span class="small" style="color:var(--ok)">${esc(e.expected)}</span>` : ''}</div>
+    ${e.current || e.change ? `<div class="diff"><div><span>原</span>${esc(e.current || '—')}</div><div><span>改</span>${esc(e.change || '—')}</div></div>` : ''}
+    ${e.reason ? `<div class="small muted">理由：${esc(e.reason)}</div>` : ''}
+    ${e.prompt ? `<div class="gen"><div class="row"><b class="small">视频生成提示词</b><span class="grow"></span>
+      <button type="button" class="btn sm" data-copyp="${i}" data-lang="cn">复制中文</button>
+      ${e.prompt_en ? `<button type="button" class="btn sm" data-copyp="${i}" data-lang="en">Copy EN</button>` : ''}</div>
+      <pre class="efd-prompt">${esc(e.prompt)}</pre></div>` : ''}</div>`).join('');
+  return `${pred}${basis}
+    ${funnel ? `<div class="sec-h">效果漏斗诊断 <span class="small muted">EFD-7，按对效果的影响力从上到下</span></div>${funnel}` : ''}
+    <div class="mods two">
+      ${box('<span style="color:var(--ok)">拉高效果的因素</span>', (j.positives || []).map(factor).join(''))}
+      ${box('<span style="color:var(--bad)">拖累效果的因素</span>', (j.negatives || []).map(factor).join(''))}
+    </div>
+    ${edits ? `<div class="sec-h">微调方案 <span class="small muted">只改关键分镜，不重做；提示词继承原片人物/商品/场景/灯光</span>
+      <span class="grow"></span><button type="button" class="btn sm" data-act="copyedits">复制全部方案</button></div>${edits}` : ''}
+    ${(j.keep || []).length ? `<div class="sec-h">保持不动</div><div class="chips">${j.keep.map((k) => `<span class="chip">${esc(txt(k))}</span>`).join('')}</div>` : ''}`;
+}
+
+function undMarkdown(u) {
+  const f = u.fact || {}, g = u.cognition || {}, j = u.judgment || {}, p = j.prediction || {};
+  const L = [`# 素材理解`, '', `## 事实层`, f.overview || '', ''];
+  (f.clips || []).forEach((c) => L.push(`- **${c.id} ${tRange(c)}** ${[c.shot_size, c.angle, c.movement].filter(Boolean).join('/')}｜${c.subject || ''} ${c.action || ''}｜灯光 ${c.lighting || '-'}｜台词 ${c.dialogue || '-'}｜字幕 ${c.subtitle || '-'}｜转场 ${c.transition_in || '-'}`));
+  L.push('', '## 认知层', `- 定位：${(g.positioning || {}).one_liner || ''}`, `- 核心吸引力：${txt(g.core_attraction)}`,
+    `- 主卖点：${txt((g.selling_points || {}).primary)}`, `- 买点：${txt(g.buying_points)}`, `- 说服：${txt(g.persuasion)}`);
+  (g.clip_roles || []).forEach((r) => L.push(`- ${r.clip} [${r.role}] ${r.function || ''}｜${r.mechanism || ''}｜复用：${r.reuse || ''}`));
+  L.push('', '## 判断层', `- 预估：档位 ${p.spend_tier || '-'}，ROAS ${p.roas_low ?? '-'}–${p.roas_high ?? '-'}（${p.vs_baseline || ''}均值，置信度 ${p.confidence ?? '-'}）`, p.summary || '');
+  (j.negatives || []).forEach((x) => L.push(`- 拖累：${x.factor}（${txt(x.clips)}）${x.evidence || ''}`));
+  (j.edits || []).forEach((e, i) => L.push('', `### 修改 ${e.priority || i + 1}：${e.type || ''} ${e.clip || ''} ${e.target || ''}`,
+    `- 原：${e.current || ''}`, `- 改：${e.change || ''}`, `- 理由：${e.reason || ''}`, e.prompt ? `- 提示词：${e.prompt}` : '', e.prompt_en ? `- Prompt: ${e.prompt_en}` : ''));
+  return L.filter((x) => x !== undefined).join('\n');
+}
+
+function undHtml(u, sub) {
+  const S = [['fact', '事实层', '只陈述事实'], ['cog', '认知层', '广告机制'], ['judge', '判断层', '效果与微调']];
+  return `<div class="subtabs">${S.map(([k, n, d]) => `<button type="button" data-sub="${k}" class="${k === sub ? 'on' : ''}"><b>${n}</b><small>${d}</small></button>`).join('')}
+      <span class="grow"></span><button type="button" class="btn sm ghost" data-act="copyund">复制理解（Markdown）</button></div>
+    ${u.legacy ? '<div class="small" style="color:var(--warn);margin-bottom:8px">这是旧版理解稿，点「AI 重新识别」生成三层碎镜拆解。</div>' : ''}
+    <div class="subpane" data-subpane="fact" ${sub === 'fact' ? '' : 'hidden'}>${factHtml(u)}</div>
+    <div class="subpane" data-subpane="cog" ${sub === 'cog' ? '' : 'hidden'}>${cogHtml(u)}</div>
+    <div class="subpane" data-subpane="judge" ${sub === 'judge' ? '' : 'hidden'}>${judgeHtml(u)}</div>`;
 }
 
 class Editor {
@@ -398,10 +748,14 @@ class Editor {
     this.render();
   }
 
+  mediaSrc() {
+    const a = this.a;
+    return a.file_path && (a.file_path.startsWith('blob:') || a.demo) ? a.file_path : a.file_path ? `/files/${a.id}` : '';
+  }
+
   mediaHtml() {
     const a = this.a;
-    const src = a.file_path && (a.file_path.startsWith('blob:') || a.demo) ? a.file_path
-      : a.file_path ? `/files/${a.id}` : '';
+    const src = this.mediaSrc();
     if (src) {
       if (a.media_type === 'video') return `<video src="${esc(src)}" controls muted playsinline poster="${a.thumb || ''}"></video>`;
       return `<img src="${esc(src)}">`;
@@ -449,35 +803,84 @@ class Editor {
   }
 
   render() {
-    const a = this.a;
-    this.root.innerHTML = `${understandingHtml(this.understanding)}
-      <div class="editor">
-      <div class="ed-media">${this.mediaHtml()}
-        <div class="ed-desc"><b>${esc(a.filename)}</b>${a.size ? ' · ' + (a.size / 1048576).toFixed(1) + 'MB' : ''}</div>
-        <div class="ed-desc muted">${esc(a.description || '')}</div></div>
-      <div>
-        <div class="names">
-          <div class="row" style="margin-bottom:6px"><b>② 素材命名</b><span class="small muted">基于内容理解 + 知识库规范</span></div>
-          <div class="nm"><span>完整命名</span><code data-r="full"></code><button class="btn sm" data-act="copyfull">复制</button></div>
-          <div class="nm"><span>短名称</span><code class="short" data-r="short"></code><button class="btn sm" data-act="copyshort">复制</button>
-            <span class="small muted" data-r="len"></span></div>
-          <div class="small" data-r="dup" style="color:var(--warn)"></div>
+    const a = this.a, u = this.understanding;
+    const tab = Editor.tab || 'und', sub = Editor.sub || 'fact';
+    const nClips = u && u.fact ? (u.fact.clips || []).length : 0;
+    const pred = u && u.judgment && u.judgment.prediction;
+    this.root.innerHTML = `<div class="vx">
+      <div class="vx-side">
+        <div class="ed-media">${this.mediaHtml()}</div>
+        ${u ? timelineHtml(u) : ''}
+        <div class="ed-desc"><b>${esc(a.filename)}</b>${a.size ? ' · ' + (a.size / 1048576).toFixed(1) + 'MB' : ''}${nClips ? ` · ${nClips} 个分镜` : ''}</div>
+        <div class="ed-desc">${esc((u && u.one_liner) || a.description || '')}</div>
+        <div class="vx-sum">
+          <div><span>短名称</span><code class="short" data-r="short2">${esc(a.short_name || '—')}</code></div>
+          ${pred && pred.spend_tier ? `<div><span>效果预估</span><b>${esc(pred.spend_tier)}</b> 档 · ROAS ${pred.roas_low ?? '-'}–${pred.roas_high ?? '-'}</div>` : ''}
         </div>
-        <div data-r="fields">${ST.fields.map((f) => this.fieldRow(f)).join('')}</div>
-        <div class="frow"><div class="fl">媒体素材ID</div><div class="fctl"><input data-act="media" style="flex:1" placeholder="Meta creative id / video id / image hash，多个用逗号分隔（可选，导入数据时会自动学习）" value="${esc((a.media_ids || []).join(','))}"></div></div>
-        <div class="row" style="margin-top:12px">
-          <button class="btn" data-act="reanalyze">↻ AI 重新识别</button>
-          ${a.file_path && !String(a.file_path).startsWith('blob:') ? `<a class="btn" href="/files/${a.id}?download=1">⬇ 下载（已重命名）</a>` : ''}
-          <span class="grow"></span>
-          <span class="small muted" data-r="saved">${a.status === 'named' ? '已保存' : '未保存'}</span>
-          <button class="btn pri" data-act="save">保存命名</button>
+        <div class="row" style="margin-top:10px">
+          <button class="btn sm" data-act="reanalyze">↻ AI 重新识别</button>
+          ${a.file_path && !String(a.file_path).startsWith('blob:') ? `<a class="btn sm" href="/files/${a.id}?download=1">⬇ 下载（已重命名）</a>` : ''}
+        </div>
+      </div>
+      <div class="vx-main">
+        <div class="vx-tabs">
+          <button type="button" data-tab="und" class="${tab === 'und' ? 'on' : ''}">内容理解<small>事实 · 认知 · 判断</small></button>
+          <button type="button" data-tab="name" class="${tab === 'name' ? 'on' : ''}">素材命名<small>知识库规范</small></button>
+        </div>
+        <div class="pane" data-pane="und" ${tab === 'und' ? '' : 'hidden'}>${u ? undHtml(u, sub) : '<div class="empty">暂无理解结果，点左侧「AI 重新识别」</div>'}</div>
+        <div class="pane" data-pane="name" ${tab === 'name' ? '' : 'hidden'}>
+          <div class="names">
+            <div class="nm"><span>完整命名</span><code data-r="full"></code><button class="btn sm" data-act="copyfull">复制</button></div>
+            <div class="nm"><span>短名称</span><code class="short" data-r="short"></code><button class="btn sm" data-act="copyshort">复制</button>
+              <span class="small muted" data-r="len"></span></div>
+            <div class="small" data-r="dup" style="color:var(--warn)"></div>
+          </div>
+          <div data-r="fields">${ST.fields.map((f) => this.fieldRow(f)).join('')}</div>
+          <div class="frow"><div class="fl">媒体素材ID</div><div class="fctl"><input data-act="media" style="flex:1" placeholder="Meta creative id / video id / image hash，多个用逗号分隔（可选，导入数据时会自动学习）" value="${esc((a.media_ids || []).join(','))}"></div></div>
+          <div class="row" style="margin-top:12px">
+            <span class="grow"></span>
+            <span class="small muted" data-r="saved">${a.status === 'named' ? '已保存' : '未保存'}</span>
+            <button class="btn pri" data-act="save">保存命名</button>
+          </div>
         </div>
       </div></div>`;
     this.root.onchange = (e) => this.onChange(e);
     this.root.oninput = (e) => { if (['date', 'version', 'text', 'spu'].includes(e.target.dataset.act)) this.onChange(e); };
     this.root.onclick = (e) => this.onClick(e);
+    const v = $('video', this.root);
+    if (v) v.ontimeupdate = () => this.onTime(v.currentTime);
     this.setNames(a.full_name, a.short_name, []);
     this.refreshNames();
+  }
+
+  clipById(id) { return ((this.understanding && this.understanding.fact && this.understanding.fact.clips) || []).find((c) => c.id === id); }
+
+  seek(id) {
+    const c = this.clipById(id);
+    if (!c) return;
+    const v = $('video', this.root);
+    if (v && c.start != null) { v.pause(); v.currentTime = c.start + Math.min(0.05, (c.end - c.start) / 2); }
+    this.activate(id, true);
+  }
+
+  onTime(t) {
+    const clips = (this.understanding && this.understanding.fact && this.understanding.fact.clips) || [];
+    const last = clips[clips.length - 1];
+    const head = $('[data-r=playhead]', this.root);
+    if (head && last && last.end) head.style.left = `${Math.min(100, t / last.end * 100)}%`;
+    const c = clips.find((x) => t >= x.start && t < x.end);
+    if (c && c.id !== this.activeClip) this.activate(c.id, false);
+  }
+
+  activate(id, scroll) {
+    this.activeClip = id;
+    $$('[data-clip]', this.root).forEach((el) => el.classList.toggle('on', el.dataset.clip === id));
+    $$('.clips', this.root).forEach((strip) => {
+      const card = strip.querySelector(`[data-clip="${id}"]`);
+      if (card && strip.offsetParent && (scroll || card.offsetLeft < strip.scrollLeft || card.offsetLeft + card.offsetWidth > strip.scrollLeft + strip.clientWidth)) {
+        strip.scrollTo({ left: card.offsetLeft - 8, behavior: 'smooth' });
+      }
+    });
   }
 
   rerenderFields() { $('[data-r=fields]', this.root).innerHTML = ST.fields.map((f) => this.fieldRow(f)).join(''); this.preview(); }
@@ -485,6 +888,7 @@ class Editor {
   setNames(full, short, dup) {
     $('[data-r=full]', this.root).textContent = full || '—';
     $('[data-r=short]', this.root).textContent = short || '—';
+    $('[data-r=short2]', this.root).textContent = short || '—';
     $('[data-r=len]', this.root).textContent = `完整 ${full ? full.length : 0} 字符 · 短名 ${short ? short.length : 0} 字符`;
     $('[data-r=dup]', this.root).textContent = dup && dup.length ? `⚠ 与已有素材完整命名重复（${dup.map((d) => d.short_name).join('、')}），建议调整版本号` : '';
   }
@@ -556,22 +960,38 @@ class Editor {
     this.markDirty();
   }
 
+  switchTab(attr, key) {
+    if (attr === 'tab') {
+      Editor.tab = key;
+      $$('.vx-tabs [data-tab]', this.root).forEach((x) => x.classList.toggle('on', x.dataset.tab === key));
+      $$('[data-pane]', this.root).forEach((x) => { x.hidden = x.dataset.pane !== key; });
+    } else {
+      Editor.sub = key;
+      $$('.subtabs [data-sub]', this.root).forEach((x) => x.classList.toggle('on', x.dataset.sub === key));
+      $$('[data-subpane]', this.root).forEach((x) => { x.hidden = x.dataset.subpane !== key; });
+    }
+    if (this.activeClip) this.activate(this.activeClip, true);
+  }
+
   async onClick(e) {
+    const nav = e.target.closest('[data-tab],[data-sub],[data-seek],[data-copyp]');
+    if (nav) {
+      if (nav.dataset.tab) return this.switchTab('tab', nav.dataset.tab);
+      if (nav.dataset.sub) return this.switchTab('sub', nav.dataset.sub);
+      if (nav.dataset.seek) return this.seek(nav.dataset.seek);
+      const ed = ((this.understanding && this.understanding.judgment && this.understanding.judgment.edits) || [])[+nav.dataset.copyp];
+      if (ed) copy(nav.dataset.lang === 'en' ? ed.prompt_en : ed.prompt);
+      return;
+    }
     const b = e.target.closest('[data-act]');
     if (!b || b.tagName === 'SELECT' || b.tagName === 'INPUT') return;
     const act = b.dataset.act;
     if (act === 'copyfull') copy($('[data-r=full]', this.root).textContent);
     if (act === 'copyshort') copy($('[data-r=short]', this.root).textContent);
-    if (act === 'copyiter') {
-      const t = (this.understanding && this.understanding.replication_brief && this.understanding.replication_brief.iteration_prompt)
-        || $('[data-r=iter]', this.root)?.textContent || '';
-      copy(t || '暂无迭代提示词');
-    }
-    if (act === 'copyund') {
-      const u = this.understanding || {};
-      const lines = [u.one_liner || '', '', ...(u.layers || []).map((ly) => `${ly.id} ${ly.name} [${ly.verdict || ''}] ${ly.score != null ? ly.score + '/5' : ''}\n- ${(ly.evidence || []).join('；')}\n- 改进：${ly.improve || ''}`)];
-      if (u.replication_brief && u.replication_brief.iteration_prompt) lines.push('', '迭代提示词：', u.replication_brief.iteration_prompt);
-      copy(lines.filter(Boolean).join('\n'));
+    if (act === 'copyund' && this.understanding) copy(undMarkdown(this.understanding));
+    if (act === 'copyedits' && this.understanding) {
+      const md = undMarkdown(this.understanding);
+      copy(md.slice(md.indexOf('## 判断层')));
     }
     if (act === 'addvalue') this.addValue(b.dataset.k);
     if (act === 'today') {
@@ -598,13 +1018,14 @@ class Editor {
   }
 
   async reanalyze(btn) {
-    btn.disabled = true; btn.innerHTML = '<span class="spin"></span> 识别中…';
+    btn.disabled = true; btn.innerHTML = '<span class="spin"></span> 切镜与识别中…';
     try {
-      let frames = this.opts.frames;
-      if (!frames && this.a.file_path) {
-        try { frames = (await extractFrames(`/files/${this.a.id}`, this.a.media_type)).frames; } catch (err) { toast(err.message); }
+      let ex = this.opts.ex;
+      if ((!ex || !ex.frames.length) && this.mediaSrc()) {
+        try { ex = this.opts.ex = await extractFrames(this.mediaSrc(), this.a.media_type); } catch (err) { toast(err.message); }
       }
-      const a = await api('POST', `/api/assets/${this.a.id}/analyze`, { frames: frames || (this.a.thumb ? [this.a.thumb] : []) });
+      if (!ex || !ex.frames.length) ex = { frames: this.a.thumb ? [this.a.thumb] : [], clips: [] };
+      const a = await api('POST', `/api/assets/${this.a.id}/analyze`, analyzeBody(ex));
       if (a.mode === 'offline') toast('未配置 AI Key，仅按文件名/类型预填');
       this.a = a; this.values = clone(a.values); this.tags = clone(a.ai_tags);
       this.understanding = a.understanding || (a.ai_raw && a.ai_raw.understanding) || null;
@@ -633,16 +1054,16 @@ const QUEUE = [];
 
 function pageUpload(main) {
   const demoNote = STATIC_DEMO
-    ? `<div class="card" style="border-color:#c9cdf3;background:#f7f8ff">在线演示：会模拟输出 <b>① EFD-7 内容理解</b> 与 <b>② 命名结果</b>（不调用真实 AI、不落库）。可点「一键试用演示素材」或自行上传。</div>`
-    : (ST.settings.ai_api_key_set ? '<div class="card" style="border-color:#cfe9d8;background:#f1faf5">已配置 AI：识别时先跑内容理解（EFD-7），再打命名。方法论说明见仓库 <code>docs/methodology-efd7.md</code>。</div>'
-      : '<div class="card" style="border-color:#f5d48a;background:#fffaf0">尚未配置 AI Key：上传后只会预填命名字段并给出理解骨架。请到 <a href="#/settings">设置</a> 填写 OpenAI 兼容接口以启用完整 EFD-7 理解。</div>');
-  main.innerHTML = `<h1>上传素材 &amp; AI 标准化命名</h1>
-    <p class="sub">AI 先按「效果漏斗拆解法 EFD-7」输出完整内容理解（心理学×叙事×视听×台词），再基于理解结果与知识库输出命名。设计师可复制迭代提示词做复刻与 A/B。</p>
+    ? `<div class="card" style="border-color:#c9cdf3;background:#f7f8ff">在线演示：真实执行<b>浏览器自动切镜</b>，理解内容为模拟数据（不调用真实 AI、不落库）。可点「试用演示视频」或自行上传。</div>`
+    : (ST.settings.ai_api_key_set ? '<div class="card" style="border-color:#cfe9d8;background:#f1faf5">已配置 AI：上传后自动切镜 → 事实层 → 认知层 → 命名 → 判断层（结合历史投放数据）。方法论见仓库 <code>methodology.md</code>。</div>'
+      : '<div class="card" style="border-color:#f5d48a;background:#fffaf0">尚未配置 AI Key：上传后只会自动切镜并预填命名字段。请到 <a href="#/settings">设置</a> 填写 OpenAI 兼容接口以启用三层理解。</div>');
+  main.innerHTML = `<h1>上传素材 &amp; AI 理解 / 命名</h1>
+    <p class="sub">视频先按画面突变自动切成碎镜，AI 再逐镜做三层理解：<b>事实层</b>（编导视角，只记录）→ <b>认知层</b>（广告机制，只分析）→ <b>判断层</b>（结合历史数据预估效果，给出分镜级微调与生成提示词）；命名基于理解结果与知识库。</p>
     ${demoNote}
     ${!STATIC_DEMO && !PRODUCTS.length ? '<div class="card" style="border-color:#f5d48a;background:#fffaf0">商品库为空：AI 无法识别 SPU。请先到 <a href="#/products">商品库</a> 同步 Shopify / Meta 目录。</div>' : ''}
     <div class="row" style="margin-bottom:12px">
-      ${STATIC_DEMO ? '<button class="btn pri" id="demoTrial">一键试用演示素材</button>' : ''}
-      <span class="small muted">${STATIC_DEMO ? '或自行上传图片 / 视频 / GIF，查看命名结果' : ''}</span>
+      ${STATIC_DEMO ? '<button class="btn pri" id="demoTrialVid">试用演示视频</button><button class="btn" id="demoTrial">试用演示图片</button>' : ''}
+      <span class="small muted">${STATIC_DEMO ? '或自行上传图片 / 视频 / GIF' : ''}</span>
     </div>
     <div class="drop" id="drop"><b>拖拽图片 / 视频 / GIF 到这里</b><div class="muted">或点击选择文件，可多选</div>
       <input type="file" id="fileIn" multiple accept="image/*,video/*" hidden></div>
@@ -655,7 +1076,49 @@ function pageUpload(main) {
   fileIn.onchange = () => { addFiles(fileIn.files); fileIn.value = ''; };
   const trial = $('#demoTrial');
   if (trial) trial.onclick = () => demoTrialUpload();
+  const trialV = $('#demoTrialVid');
+  if (trialV) trialV.onclick = () => demoTrialVideo(trialV);
   QUEUE.forEach(renderQueueItem);
+}
+
+async function demoTrialVideo(btn) {
+  const cv = document.createElement('canvas');
+  cv.width = 360; cv.height = 640;
+  const types = ['video/webm;codecs=vp9', 'video/webm', 'video/mp4'];
+  const mime = window.MediaRecorder && types.find((t) => MediaRecorder.isTypeSupported(t));
+  if (!mime || !cv.captureStream) { toast('当前浏览器不支持生成演示视频，改用演示图片'); return demoTrialUpload(); }
+  const p = PRODUCTS[0] || { spu: 'FI-20250489' };
+  const shots = [['#e5484d', '还在为这个烦恼？', 1.6], ['#f08c00', '使用前', 1.4], ['#4f5bd5', `${p.spu} 细节`, 2.2], ['#2f80ed', '前后对比', 1.6], ['#12a36b', '一整天都舒服', 1.6], ['#8e44ad', '点击查看同款 →', 1.8]];
+  const total = shots.reduce((s, x) => s + x[2], 0);
+  btn.disabled = true; btn.textContent = `生成演示视频中（${Math.ceil(total)}s）…`;
+  const g = cv.getContext('2d');
+  const rec = new MediaRecorder(cv.captureStream(30), { mimeType: mime });
+  const chunks = [];
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  const done = new Promise((res) => { rec.onstop = res; });
+  rec.start(200);
+  const t0 = performance.now();
+  await new Promise((res) => {
+    const draw = () => {
+      const t = (performance.now() - t0) / 1000;
+      if (t >= total) return res();
+      let acc = 0, i = 0;
+      while (i < shots.length - 1 && t >= acc + shots[i][2]) acc += shots[i++][2];
+      const [col, text] = shots[i], k = (t - acc) / shots[i][2];
+      g.fillStyle = col; g.fillRect(0, 0, 360, 640);
+      g.fillStyle = 'rgba(255,255,255,.18)'; g.beginPath(); g.arc(180 + 60 * Math.sin(k * 3), 330, 90 + 20 * k, 0, 7); g.fill();
+      g.fillStyle = '#fff'; g.font = 'bold 28px sans-serif'; g.textAlign = 'center'; g.fillText(text, 180, 120);
+      g.font = '16px sans-serif'; g.fillText(`Shot ${i + 1}/${shots.length}`, 180, 600);
+      requestAnimationFrame(draw);
+    };
+    draw();
+  });
+  rec.stop();
+  await done;
+  const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+  addFiles([new File([new Blob(chunks, { type: mime.split(';')[0] })], `${p.spu}_Shoot-MP_demo.${ext}`, { type: mime.split(';')[0] })]);
+  btn.disabled = false; btn.textContent = '试用演示视频';
+  toast('演示视频已生成，正在自动切镜与识别…', 'ok');
 }
 
 async function demoTrialUpload() {
@@ -703,13 +1166,13 @@ async function processItem(item) {
   try {
     setItem(item, '抽取画面');
     const url = URL.createObjectURL(f);
-    let ex = { frames: [], thumb: null };
-    try { ex = await extractFrames(url, mtype); } catch (e) { toast(f.name + '：' + e.message); }
-    item.frames = ex.frames;
+    let ex = { frames: [], thumb: null, clips: [] };
+    try { ex = await extractFrames(url, mtype, (s) => setItem(item, s)); } catch (e) { toast(f.name + '：' + e.message); }
+    item.ex = ex;
     setItem(item, '上传中');
     const a = await api('POST', `/api/assets/upload?filename=${encodeURIComponent(f.name)}&media_type=${mtype}`, f, { raw: true });
-    setItem(item, 'AI 识别中');
-    item.asset = await api('POST', `/api/assets/${a.id}/analyze`, { frames: ex.frames, thumb: ex.thumb });
+    setItem(item, `AI 三层理解中（${ex.clips.length || 1} 个分镜）`);
+    item.asset = await api('POST', `/api/assets/${a.id}/analyze`, analyzeBody(ex));
     setItem(item, '待确认');
   } catch (e) {
     item.error = e.message;
@@ -728,14 +1191,14 @@ function renderQueueItem(item, prepend) {
     el.id = 'q_' + item.id;
     prepend ? q.prepend(el) : q.appendChild(el);
   }
-  const busy = ['准备中', '抽取画面', '上传中', 'AI 识别中'].includes(item.status);
+  const busy = ['准备中', '抽取画面', '智能切镜', '上传中'].includes(item.status) || item.status.startsWith('AI ');
   if (item.asset && !busy) {
     if (!el.dataset.ed) {
       const badge = item.asset.mode === 'offline' ? '已预填' : item.asset.mode === 'demo' ? '演示识别' : 'AI 已识别';
       el.innerHTML = `<div class="qhead"><b>${esc(item.file.name)}</b><span class="badge ok">${badge}</span>
         <span class="grow"></span><button class="btn sm ghost" data-rm>移出列表</button></div><div class="edroot"></div>`;
       el.dataset.ed = '1';
-      new Editor(item.asset, $('.edroot', el), { frames: item.frames, onSaved: (a) => { item.asset = a; } });
+      new Editor(item.asset, $('.edroot', el), { ex: item.ex, onSaved: (a) => { item.asset = a; } });
       $('[data-rm]', el).onclick = () => { QUEUE.splice(QUEUE.indexOf(item), 1); el.remove(); };
     }
     return;
@@ -1100,6 +1563,7 @@ function pageSettings(main) {
     <div class="card"><h3>AI 识别（OpenAI 兼容接口，需支持图片输入）</h3><div class="row">
       <label class="f grow">Base URL<input data-s="ai_base_url" value="${esc(s.ai_base_url)}"></label>
       <label class="f">模型<input data-s="ai_model" value="${esc(s.ai_model)}" style="width:200px"></label>
+      <label class="f" title="视频口播转写（/audio/transcriptions），不支持的接口会自动跳过">语音转写模型<input data-s="ai_asr_model" value="${esc(s.ai_asr_model || 'whisper-1')}" style="width:130px"></label>
       <label class="f grow">API Key<input data-s="ai_api_key" type="password" placeholder="${s.ai_api_key_set ? '已配置（留空保持不变）' : 'sk-...'}"></label></div>
       <div class="small muted" style="margin-top:6px">可用 OpenAI（gpt-4o / gpt-4o-mini）、Gemini 的 OpenAI 兼容端点、通义千问 VL、豆包视觉等。</div></div>
     <div class="card"><h3>Meta（商品目录同步 / 广告数据拉取）</h3><div class="row">
