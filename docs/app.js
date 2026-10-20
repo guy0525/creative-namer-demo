@@ -10,6 +10,13 @@ let ST = null;
 let PRODUCTS = [];
 
 const STATIC_DEMO = !!window.STATIC_DEMO;
+const DEMO_SESSION = { seq: 9000, assets: {}, taken: new Set() };
+const DEMO_TAG_POOL = [
+  ['创意方向', '折扣促销', 'Discount'], ['创意方向', '多品展示', 'MultiProduct'], ['创意方向', '单品卖点', 'SingleFocus'], ['创意方向', '场景种草', 'Lifestyle'],
+  ['人物', '女性', 'Female'], ['人物', '男性', 'Male'], ['主色调', '黑色', 'Black'], ['主色调', '卡其', 'Khaki'], ['主色调', '白色', 'White'],
+  ['景别', '特写', 'CloseUp'], ['景别', '全身', 'FullBody'], ['开头钩子', '痛点提问', 'PainQuestion'], ['开头钩子', '效果对比', 'BeforeAfter'], ['口播', '有口播', 'Voiceover'],
+];
+const MEDIA_CODE_JS = { image: ['IMG', '图片'], video: ['VID', '视频'], gif: ['GIF', 'GIF'] };
 
 function staticFile(path) {
   const u = new URL(path, 'http://x');
@@ -18,10 +25,179 @@ function staticFile(path) {
   return 'data/' + key.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '') + '.json';
 }
 
+function demoB36(n, w) {
+  const a = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let s = '', x = Math.max(0, n | 0);
+  do { s = a[x % 36] + s; x = Math.floor(x / 36); } while (x);
+  return w ? s.padStart(w, '0').slice(-w) : s;
+}
+function demoClean(s, sep) { return String(s || '').replace(new RegExp(`[${sep.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\s]+`, 'g'), '').trim(); }
+function demoPick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function demoEnumVal(v, source, conf, reason) {
+  const d = { value_id: v.id, cn: v.cn, en: v.en, code: v.code, source };
+  if (conf != null) d.confidence = conf;
+  if (reason) d.reason = reason;
+  return d;
+}
+function demoMatchProduct(filename) {
+  const low = (filename || '').toLowerCase();
+  return PRODUCTS.find((p) => low.includes((p.spu || '').toLowerCase()) || low.includes((p.handle || '').toLowerCase())) || null;
+}
+function demoBuildNames(seq, values, tags) {
+  const s = ST.settings, sep = s.separator || '_', enFirst = s.name_lang !== 'cn';
+  const parts = [];
+  for (const f of ST.fields) {
+    if (f.type === 'ai_tags') {
+      if (s.ai_tags_in_name !== '1') continue;
+      const enabled = (tags || []).filter((t) => t.enabled !== false).slice(0, +(s.ai_tags_max || 3));
+      const seg = enabled.map((t) => demoClean((enFirst ? t.en || t.cn : t.cn || t.en), sep)).filter(Boolean).join(s.ai_tag_joiner || '+');
+      if (seg) parts.push(seg);
+      continue;
+    }
+    const v = values[f.key];
+    if (!v) continue;
+    let seg = '';
+    if (f.type === 'product') seg = v.spu || '';
+    else if (f.type === 'enum') seg = enFirst ? (v.en || v.cn) : (v.cn || v.en);
+    else if (f.type === 'date') seg = v.date || '';
+    else if (f.type === 'version') seg = v.n ? `V${v.n}` : '';
+    else if (f.type === 'text') seg = v.text || '';
+    seg = demoClean(seg, sep);
+    if (seg) parts.push(seg);
+  }
+  const full = parts.join(sep);
+  const w = +(s.code_width || 2);
+  let base = '';
+  for (const f of ST.fields) {
+    if (!f.in_short || !['enum', 'date', 'version', 'text'].includes(f.type)) continue;
+    const v = values[f.key] || {};
+    if (f.type === 'version') base += 'V' + (v.n > 0 && v.n < 36 ? demoB36(v.n) : '0');
+    else if (f.type === 'date') base += String(v.date || '').replace(/\D/g, '').slice(0, 6).padEnd(6, 'X');
+    else if (f.type === 'text') base += String(v.text || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, w).padEnd(w, 'X');
+    else base += String(v.code || '').toUpperCase().slice(0, w).padEnd(w, 'X') || 'X'.repeat(w);
+  }
+  if (!base) base = 'N' + demoB36(seq || 0, 4);
+  let short = base;
+  if (DEMO_SESSION.taken.has(base)) {
+    for (const ch of 'ABCDEFGHJKLMNPQRSTUVWXYZ') {
+      if (!DEMO_SESSION.taken.has(base + ch)) { short = base + ch; break; }
+    }
+  }
+  return { full_name: full, short_name: short, duplicates: [] };
+}
+function demoDefaultValues(mtype, filename) {
+  const s = ST.settings, values = {};
+  const product = demoMatchProduct(filename) || (PRODUCTS.length ? demoPick(PRODUCTS) : null);
+  for (const f of ST.fields) {
+    if (f.type === 'product' && product) {
+      values[f.key] = { product_id: product.id, spu: product.spu, title: product.title, source: demoMatchProduct(filename) ? 'match' : 'ai',
+        confidence: demoMatchProduct(filename) ? 0.95 : 0.72, reason: demoMatchProduct(filename) ? '文件名包含 SPU' : '演示：按画面商品猜测' };
+    } else if (f.type === 'enum' && f.key === 'material_type') {
+      const [en, cn] = MEDIA_CODE_JS[mtype] || MEDIA_CODE_JS.image;
+      const v = f.values.find((x) => x.en === en || x.cn === cn || x.code === en);
+      if (v) values[f.key] = demoEnumVal(v, 'file', 1, '由文件类型确定');
+    } else if (f.type === 'enum' && f.key === 'designer') {
+      const v = f.values.find((x) => String(x.id) === String(s.default_designer)) || f.values[0];
+      if (v) values[f.key] = demoEnumVal(v, 'default');
+    } else if (f.type === 'date') {
+      const d = new Date();
+      values[f.key] = { date: String(d.getFullYear()).slice(2) + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0'), source: 'default' };
+    } else if (f.type === 'version') {
+      values[f.key] = { n: 1, source: 'default' };
+    } else if (f.type === 'enum' && f.values.length && ['expression', 'selling_point', 'scene'].includes(f.key)) {
+      const low = (filename || '').toLowerCase();
+      const hit = f.values.find((x) => (x.en && low.includes(String(x.en).toLowerCase())) || (x.cn && filename.includes(x.cn)));
+      const v = hit || demoPick(f.values);
+      values[f.key] = demoEnumVal(v, hit ? 'filename' : 'ai', hit ? 0.85 : 0.7 + Math.random() * 0.25,
+        hit ? '文件名包含该词' : '演示识别：根据画面内容匹配');
+    }
+  }
+  return values;
+}
+function demoAiTags() {
+  const cats = [...new Set(DEMO_TAG_POOL.map((t) => t[0]))];
+  const picked = [];
+  const used = new Set();
+  while (picked.length < 4 && used.size < cats.length) {
+    const cat = demoPick(cats.filter((c) => !used.has(c)));
+    used.add(cat);
+    const pool = DEMO_TAG_POOL.filter((t) => t[0] === cat);
+    const t = demoPick(pool);
+    picked.push({ category: t[0], cn: t[1], en: t[2], enabled: true });
+  }
+  return picked;
+}
+function demoCreateAsset({ filename, media_type, size, thumb, blobUrl }) {
+  const seq = ++DEMO_SESSION.seq;
+  const id = seq;
+  const values = demoDefaultValues(media_type, filename);
+  const ai_tags = demoAiTags();
+  const names = demoBuildNames(seq, values, ai_tags);
+  DEMO_SESSION.taken.add(names.short_name);
+  const a = {
+    id, seq, filename, ext: (filename.split('.').pop() || '').toLowerCase(), media_type, size: size || 0,
+    file_path: blobUrl || '', thumb: thumb || null, product_id: (Object.values(values).find((v) => v && v.product_id) || {}).product_id || null,
+    description: '演示识别：已根据文件类型、文件名与画面特征预填命名字段与 AI 标签（在线演示不调用真实 AI）。',
+    full_name: names.full_name, short_name: names.short_name, media_ids: [], status: 'pending',
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(), learned_ids: [], short_history: '',
+    values, ai_tags, mode: 'demo', demo: true,
+  };
+  DEMO_SESSION.assets[id] = a;
+  return clone(a);
+}
+
 async function api(method, path, body, opts = {}) {
   if (STATIC_DEMO) {
-    if (path === '/api/names/preview' && body && !body.id) return (await fetch('data/spec_example.json')).json();
-    if (method !== 'GET') throw new Error('这是在线演示版，不能修改数据；完整功能请本地运行');
+    if (path === '/api/names/preview') {
+      const seq = (body && body.seq) || (body && body.id && DEMO_SESSION.assets[body.id] && DEMO_SESSION.assets[body.id].seq) || 1;
+      return demoBuildNames(seq, (body && body.values) || {}, (body && body.ai_tags) || []);
+    }
+    if (method === 'POST' && path.startsWith('/api/assets/upload')) {
+      const u = new URL(path, 'http://x');
+      const filename = u.searchParams.get('filename') || 'demo.jpg';
+      const media_type = u.searchParams.get('media_type') || 'image';
+      const blob = body instanceof Blob ? body : new Blob([body || '']);
+      const blobUrl = URL.createObjectURL(blob);
+      return demoCreateAsset({ filename, media_type, size: blob.size, blobUrl });
+    }
+    const am = path.match(/^\/api\/assets\/(\d+)\/analyze$/);
+    if (method === 'POST' && am) {
+      const a = DEMO_SESSION.assets[+am[1]];
+      if (!a) throw new Error('演示素材不存在');
+      if (body && body.thumb) a.thumb = body.thumb;
+      if (!a.ai_tags.length) a.ai_tags = demoAiTags();
+      Object.assign(a, demoBuildNames(a.seq, a.values, a.ai_tags));
+      a.mode = 'demo';
+      a.status = 'pending';
+      a.description = '演示识别完成：已匹配商品与命名字段，并补充 AI 标签。可修改后点「保存命名」（仅保存在本页会话）。';
+      DEMO_SESSION.assets[a.id] = a;
+      return clone(a);
+    }
+    const sm = path.match(/^\/api\/assets\/(\d+)$/);
+    if (method === 'PUT' && sm) {
+      const a = DEMO_SESSION.assets[+sm[1]];
+      if (!a) throw new Error('演示素材不存在，请先在本页上传');
+      a.values = body.values || a.values;
+      a.ai_tags = body.ai_tags || a.ai_tags;
+      if (body.media_ids != null) a.media_ids = String(body.media_ids).split(/[,，\s]+/).filter(Boolean);
+      const names = demoBuildNames(a.seq, a.values, a.ai_tags);
+      DEMO_SESSION.taken.delete(a.short_name);
+      DEMO_SESSION.taken.add(names.short_name);
+      a.full_name = names.full_name;
+      a.short_name = names.short_name;
+      a.status = 'named';
+      a.updated_at = new Date().toISOString();
+      return clone(a);
+    }
+    if (method === 'GET' && path === '/api/assets') {
+      const r = await fetch(staticFile(path));
+      const list = r.ok ? await r.json() : [];
+      return [...Object.values(DEMO_SESSION.assets), ...list];
+    }
+    if (method === 'GET' && sm) {
+      if (DEMO_SESSION.assets[+sm[1]]) return clone(DEMO_SESSION.assets[+sm[1]]);
+    }
+    if (method !== 'GET') throw new Error('这是在线演示版，不能修改知识库/投放数据；上传命名可在本页试用');
     const r = await fetch(staticFile(path));
     if (!r.ok) throw new Error('演示版只包含默认时间窗口（近 30 日）的数据，请清空日期筛选');
     return r.json();
@@ -52,7 +228,7 @@ async function loadState(st) {
   if (ST.readonly && !document.body.classList.contains('ro')) {
     document.body.classList.add('ro');
     document.body.insertAdjacentHTML('afterbegin', `<div class="ro-bar">${STATIC_DEMO
-      ? '在线演示 · 演示数据 · 可浏览「③ 数据分析」的三个视角与全部下钻，不能修改数据'
+      ? '在线演示 · 可试用「上传 & AI 命名」与三个分析视角；命名结果仅保存在本页会话，不会写入服务器'
       : '只读分享视图 · 可浏览全部分析与下钻，不能修改数据'}</div>`);
   }
   $('#navFoot').innerHTML = `商品 ${ST.counts.products} · 素材 ${ST.counts.assets}<br>投放数据 ${ST.counts.perf} 行<br>${ST.settings.ai_api_key_set ? '<span style="color:#7ee2b0">● AI 已连接</span>' : '<span style="color:#f5b971">● AI 未配置</span>'}`;
@@ -145,9 +321,11 @@ class Editor {
 
   mediaHtml() {
     const a = this.a;
-    if (a.file_path) {
-      if (a.media_type === 'video') return `<video src="/files/${a.id}" controls muted playsinline poster="${a.thumb || ''}"></video>`;
-      return `<img src="/files/${a.id}">`;
+    const src = a.file_path && (a.file_path.startsWith('blob:') || a.demo) ? a.file_path
+      : a.file_path ? `/files/${a.id}` : '';
+    if (src) {
+      if (a.media_type === 'video') return `<video src="${esc(src)}" controls muted playsinline poster="${a.thumb || ''}"></video>`;
+      return `<img src="${esc(src)}">`;
     }
     return a.thumb ? `<img src="${a.thumb}">` : `<div class="ph">无预览</div>`;
   }
@@ -349,7 +527,7 @@ class Editor {
       });
       this.a = a;
       $('[data-r=saved]', this.root).textContent = '已保存 ✓';
-      toast('已保存：' + a.short_name, 'ok');
+      toast((STATIC_DEMO ? '演示已保存（仅本页会话）：' : '已保存：') + a.short_name, 'ok');
       if (this.opts.onSaved) this.opts.onSaved(a);
     } catch (e) { fail(e); }
     btn.disabled = false;
@@ -361,10 +539,17 @@ class Editor {
 const QUEUE = [];
 
 function pageUpload(main) {
+  const demoNote = STATIC_DEMO
+    ? `<div class="card" style="border-color:#c9cdf3;background:#f7f8ff">在线演示模式：上传后会<strong>模拟 AI 识别</strong>并按当前命名规范生成完整命名 / 短名称（不调用真实 AI、不落库）。也可点「一键试用演示素材」。</div>`
+    : (ST.settings.ai_api_key_set ? '' : '<div class="card" style="border-color:#f5d48a;background:#fffaf0">尚未配置 AI Key：上传后只会按文件类型和文件名预填。请到 <a href="#/settings">设置</a> 填写 OpenAI 兼容接口。</div>');
   main.innerHTML = `<h1>上传素材 &amp; AI 标准化命名</h1>
     <p class="sub">AI 识别画面内容 → 匹配商品库 SPU → 按知识库命名规范打标签，并补充规范外的 AI 标签 → 生成完整命名与可还原的短名称。每个字段都可手动修改。</p>
-    ${ST.settings.ai_api_key_set ? '' : '<div class="card" style="border-color:#f5d48a;background:#fffaf0">尚未配置 AI Key：上传后只会按文件类型和文件名预填。请到 <a href="#/settings">设置</a> 填写 OpenAI 兼容接口。</div>'}
-    ${PRODUCTS.length ? '' : '<div class="card" style="border-color:#f5d48a;background:#fffaf0">商品库为空：AI 无法识别 SPU。请先到 <a href="#/products">商品库</a> 同步 Shopify / Meta 目录。</div>'}
+    ${demoNote}
+    ${!STATIC_DEMO && !PRODUCTS.length ? '<div class="card" style="border-color:#f5d48a;background:#fffaf0">商品库为空：AI 无法识别 SPU。请先到 <a href="#/products">商品库</a> 同步 Shopify / Meta 目录。</div>' : ''}
+    <div class="row" style="margin-bottom:12px">
+      ${STATIC_DEMO ? '<button class="btn pri" id="demoTrial">一键试用演示素材</button>' : ''}
+      <span class="small muted">${STATIC_DEMO ? '或自行上传图片 / 视频 / GIF，查看命名结果' : ''}</span>
+    </div>
     <div class="drop" id="drop"><b>拖拽图片 / 视频 / GIF 到这里</b><div class="muted">或点击选择文件，可多选</div>
       <input type="file" id="fileIn" multiple accept="image/*,video/*" hidden></div>
     <div id="queue" style="margin-top:18px"></div>`;
@@ -374,7 +559,26 @@ function pageUpload(main) {
   drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files); };
   fileIn.onchange = () => { addFiles(fileIn.files); fileIn.value = ''; };
+  const trial = $('#demoTrial');
+  if (trial) trial.onclick = () => demoTrialUpload();
   QUEUE.forEach(renderQueueItem);
+}
+
+async function demoTrialUpload() {
+  const p = PRODUCTS[0] || { spu: 'FI-20250489', title: 'Demo Product' };
+  const cv = document.createElement('canvas');
+  cv.width = 640; cv.height = 800;
+  const g = cv.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 800);
+  grd.addColorStop(0, '#6c5ce7'); grd.addColorStop(1, '#00b894');
+  g.fillStyle = grd; g.fillRect(0, 0, 640, 800);
+  g.fillStyle = '#fff'; g.font = 'bold 42px sans-serif'; g.fillText(p.spu, 48, 120);
+  g.font = '28px sans-serif'; g.fillText(String(p.title || '').slice(0, 28), 48, 180);
+  g.font = '20px sans-serif'; g.fillText('Creative Insights Demo', 48, 240);
+  const blob = await new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.92));
+  const file = new File([blob], `${p.spu}_Shoot-MP_demo.jpg`, { type: 'image/jpeg' });
+  addFiles([file]);
+  toast('已加入演示素材，正在识别命名…', 'ok');
 }
 
 function addFiles(list) {
@@ -433,7 +637,8 @@ function renderQueueItem(item, prepend) {
   const busy = ['准备中', '抽取画面', '上传中', 'AI 识别中'].includes(item.status);
   if (item.asset && !busy) {
     if (!el.dataset.ed) {
-      el.innerHTML = `<div class="qhead"><b>${esc(item.file.name)}</b><span class="badge ok">${item.asset.mode === 'offline' ? '已预填' : 'AI 已识别'}</span>
+      const badge = item.asset.mode === 'offline' ? '已预填' : item.asset.mode === 'demo' ? '演示识别' : 'AI 已识别';
+      el.innerHTML = `<div class="qhead"><b>${esc(item.file.name)}</b><span class="badge ok">${badge}</span>
         <span class="grow"></span><button class="btn sm ghost" data-rm>移出列表</button></div><div class="edroot"></div>`;
       el.dataset.ed = '1';
       new Editor(item.asset, $('.edroot', el), { frames: item.frames, onSaved: (a) => { item.asset = a; } });
