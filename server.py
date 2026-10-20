@@ -2905,7 +2905,7 @@ def r_assets_csv(h, c, q):
         row += [",".join(a["media_ids"]), a["description"]]
         w.writerow(row)
     h.send(200, "\ufeff" + buf.getvalue(), "text/csv; charset=utf-8",
-           {"Content-Disposition": "attachment; filename*=UTF-8''%s" % urllib.parse.quote("素材命名表.csv")})
+           {"Content-Disposition": "attachment; filename*=UTF-8''%s" % urllib.parse.quote("命名规范表.csv")})
 
 
 def r_file(h, c, q, aid):
